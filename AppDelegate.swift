@@ -20,6 +20,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var toggleMenuItem: NSMenuItem!
     private var appsMenuItem: NSMenuItem!
 
+    // MARK: - Icon Animation
+
+    private var iconSleep: NSImage!
+    private var iconWake1: NSImage!
+    private var iconWake2: NSImage!
+    private var wakeAnimationFrame: Int = 0  // 0 = wake1, 1 = wake2
+
     // MARK: - User Preferences
 
     private var idleThresholdSeconds: TimeInterval {
@@ -41,7 +48,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         activityMonitor.idleThresholdSeconds = idleThresholdSeconds
-
+        loadIcons()
         buildStatusItem()
 
         if !UserDefaults.standard.bool(forKey: "didCompleteOnboarding") {
@@ -69,6 +76,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    // MARK: - Icons
+
+    private func loadIcons() {
+        let bundle = Bundle.main
+        let resourcePath = bundle.resourcePath ?? ""
+
+        func loadIcon(_ filename: String) -> NSImage {
+            let path = (resourcePath as NSString).appendingPathComponent(filename)
+            guard let image = NSImage(contentsOfFile: path) else {
+                // Fallback to SF Symbol if PNG not found
+                return NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: nil)!
+            }
+            image.isTemplate = true
+            image.size = NSSize(width: image.size.width / 2, height: image.size.height / 2)
+            return image
+        }
+
+        iconSleep = loadIcon("robot-sleep.png")
+        iconWake1 = loadIcon("robot-wake-1.png")
+        iconWake2 = loadIcon("robot-wake-2.png")
+    }
+
     // MARK: - Status Bar
 
     /// Build the status item once. Subsequent updates go through updateUI() or refreshAppsMenuItem().
@@ -76,7 +105,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         guard let button = statusItem.button else { return }
-        button.image = NSImage(systemSymbolName: "moon.zzz", accessibilityDescription: "Sleep allowed")
+        button.image = iconSleep
         button.imagePosition = .imageLeading
 
         let menu = NSMenu()
@@ -179,14 +208,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateUI(state: MonitorState) {
         guard let button = statusItem.button else { return }
 
-        // Icon reflects real-time Claude state: bolt = actively working, moon = not
+        // Icon reflects real-time Claude state
         let claudeActive: Bool
         if case .active = state { claudeActive = true } else { claudeActive = false }
 
-        button.image = NSImage(
-            systemSymbolName: claudeActive ? "bolt.fill" : "moon.zzz",
-            accessibilityDescription: claudeActive ? "Claude active" : "Claude idle"
-        )
+        if claudeActive {
+            // Alternate between wake 1 and wake 2 each poll tick (0.5s)
+            button.image = (wakeAnimationFrame == 0) ? iconWake1 : iconWake2
+            wakeAnimationFrame = 1 - wakeAnimationFrame
+        } else {
+            button.image = iconSleep
+            wakeAnimationFrame = 0
+        }
 
         switch state {
         case .noSession:

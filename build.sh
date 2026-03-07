@@ -51,6 +51,11 @@ swiftc \
 # Copy Info.plist
 cp "${SRC_DIR}/Info.plist" "${CONTENTS}/Info.plist"
 
+# Copy icon resources
+cp "${SRC_DIR}/resources/robot-sleep.png" "${RESOURCES}/robot-sleep.png"
+cp "${SRC_DIR}/resources/robot-wake-1.png" "${RESOURCES}/robot-wake-1.png"
+cp "${SRC_DIR}/resources/robot-wake-2.png" "${RESOURCES}/robot-wake-2.png"
+
 echo ""
 echo "✅ Built: ${APP_BUNDLE}"
 echo ""
