@@ -34,7 +34,7 @@ class SettingsWindowController: NSWindowController {
         var y = contentView.bounds.height - 40
 
         // Title
-        let titleLabel = makeLabel("Monitor Claude Code in these apps:", bold: true)
+        let titleLabel = makeLabel("Monitor AI coding assistants in these apps:", bold: true)
         titleLabel.frame = NSRect(x: 20, y: y, width: 380, height: 20)
         contentView.addSubview(titleLabel)
         y -= 10

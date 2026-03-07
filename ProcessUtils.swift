@@ -71,11 +71,18 @@ enum ProcessTable {
         return result
     }
 
-    /// Find all PIDs whose command basename matches "claude".
-    static func findClaudeProcesses(in table: [Int32: ProcessInfo]) -> [ProcessInfo] {
+    /// Known AI coding assistant process names.
+    static let aiProcessNames: Set<String> = [
+        "claude",                       // Anthropic Claude Code
+        "codex",                        // OpenAI Codex
+        "language_server_macos_arm",    // Google Antigravity (Gemini)
+    ]
+
+    /// Find all PIDs whose command basename matches a known AI assistant.
+    static func findAIProcesses(in table: [Int32: ProcessInfo]) -> [ProcessInfo] {
         table.values.filter { info in
             let baseName = (info.command as NSString).lastPathComponent
-            return baseName == "claude"
+            return aiProcessNames.contains(baseName)
         }
     }
 }

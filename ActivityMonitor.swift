@@ -238,22 +238,22 @@ class ActivityMonitor {
 
     func poll() -> MonitorState {
         let table = ProcessTable.snapshot()
-        let claudeProcesses = ProcessTable.findClaudeProcesses(in: table)
+        let aiProcesses = ProcessTable.findAIProcesses(in: table)
 
-        guard !claudeProcesses.isEmpty else {
+        guard !aiProcesses.isEmpty else {
             idleSince = nil
             return .noSession
         }
 
-        // Find the most active Claude session
+        // Find the most active AI session
         var bestSnapshot: ActivitySnapshot?
         var bestHostApp: HostApp?
 
-        for claudeProc in claudeProcesses {
-            let match = HostAppRegistry.hostApp(forProcessID: claudeProc.pid, processTable: table)
+        for aiProc in aiProcesses {
+            let match = HostAppRegistry.hostApp(forProcessID: aiProc.pid, processTable: table)
             let hostApp = match?.app
             let hostAppPid = match?.pid
-            let snapshot = sampleSession(claudePid: claudeProc.pid, hostApp: hostApp, hostAppPid: hostAppPid, table: table)
+            let snapshot = sampleSession(aiPid: aiProc.pid, hostApp: hostApp, hostAppPid: hostAppPid, table: table)
 
             if let existing = bestSnapshot {
                 if snapshot.anthropicConnections > existing.anthropicConnections ||
@@ -336,28 +336,28 @@ class ActivityMonitor {
 
     // MARK: - Signal Sampling
 
-    private func sampleSession(claudePid: Int32, hostApp: HostApp?, hostAppPid: Int32?, table: [Int32: ProcessInfo]) -> ActivitySnapshot {
-        let children = ProcessTable.descendants(of: claudePid, in: table)
-        let claudeCPU = table[claudePid]?.cpu ?? 0
-        let totalCPU = children.reduce(claudeCPU) { $0 + $1.cpu }
+    private func sampleSession(aiPid: Int32, hostApp: HostApp?, hostAppPid: Int32?, table: [Int32: ProcessInfo]) -> ActivitySnapshot {
+        let children = ProcessTable.descendants(of: aiPid, in: table)
+        let aiCPU = table[aiPid]?.cpu ?? 0
+        let totalCPU = children.reduce(aiCPU) { $0 + $1.cpu }
 
-        // Check claude CLI process for Anthropic connections
-        var connections = countAnthropicConnections(pids: [claudePid])
+        // Check AI process for API connections
+        var connections = countAPIConnections(pids: [aiPid])
 
-        // For Electron host apps (e.g. Claude Desktop), also check the host app's
-        // entire process tree — renderer child processes make API calls.
-        if connections == 0, let hostPid = hostAppPid, hostPid != claudePid,
+        // For Electron host apps, also check the host app's entire process
+        // tree — renderer child processes may make the API calls.
+        if connections == 0, let hostPid = hostAppPid, hostPid != aiPid,
            hostApp?.isElectron == true {
             let hostChildren = ProcessTable.descendants(of: hostPid, in: table)
             let allHostPids = [hostPid] + hostChildren.map(\.pid)
-            connections = countAnthropicConnections(pids: allHostPids)
+            connections = countAPIConnections(pids: allHostPids)
             caLog("  host tree check: hostPid=\(hostPid) pids=\(allHostPids.count) connections=\(connections)")
         }
 
-        caLog("  sample: claudePid=\(claudePid) cpu=\(String(format:"%.1f", totalCPU)) net=\(connections) children=\(children.count)")
+        caLog("  sample: aiPid=\(aiPid) cpu=\(String(format:"%.1f", totalCPU)) net=\(connections) children=\(children.count)")
 
         return ActivitySnapshot(
-            claudePid: claudePid,
+            claudePid: aiPid,
             hostApp: hostApp,
             aggregateCPU: totalCPU,
             anthropicConnections: connections,
@@ -367,10 +367,9 @@ class ActivityMonitor {
     }
 
     /// Count ESTABLISHED TCP connections to port 443 for the given PIDs.
-    /// The Claude CLI only connects to Anthropic's API over HTTPS, so any
-    /// port-443 connection from it is an Anthropic connection. This avoids
-    /// fragile IP matching that breaks when Anthropic changes infrastructure.
-    private func countAnthropicConnections(pids: [Int32]) -> Int {
+    /// AI CLI tools only connect to their vendor's API over HTTPS, so any
+    /// port-443 connection is an API connection. This avoids fragile IP matching.
+    private func countAPIConnections(pids: [Int32]) -> Int {
         let pidList = pids.map(String.init).joined(separator: ",")
         let output = Shell.run("lsof", "-i", "TCP:443", "-n", "-P", "-a", "-p", pidList)
         var count = 0

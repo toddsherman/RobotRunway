@@ -1,6 +1,6 @@
 import Cocoa
 
-/// First-launch setup window where the user selects which apps they use Claude Code in.
+/// First-launch setup window where the user selects which apps they use AI coding assistants in.
 class OnboardingWindowController: NSWindowController {
 
     private var checkboxes: [(HostApp, NSButton)] = []
@@ -37,7 +37,7 @@ class OnboardingWindowController: NSWindowController {
         y -= 32
 
         // Tagline
-        let tagline = makeLabel("Keep your Mac awake while Claude Code is working.")
+        let tagline = makeLabel("Keep your Mac awake while AI coding assistants are working.")
         tagline.frame = NSRect(x: 24, y: y, width: 432, height: 18)
         tagline.font = NSFont.systemFont(ofSize: 13)
         tagline.textColor = .secondaryLabelColor
@@ -46,9 +46,9 @@ class OnboardingWindowController: NSWindowController {
 
         // Explanation
         let explanation = makeLabel(
-            "ClaudeAwake sits in your menu bar and monitors Claude Code activity. " +
-            "It prevents your Mac from sleeping during active work and allows sleep " +
-            "when Claude is idle."
+            "ClaudeAwake sits in your menu bar and monitors AI coding activity " +
+            "(Claude, Codex, Gemini). It prevents your Mac from sleeping during " +
+            "active work and allows sleep when idle."
         )
         explanation.frame = NSRect(x: 24, y: y - 32, width: 432, height: 48)
         explanation.font = NSFont.systemFont(ofSize: 12)
@@ -72,7 +72,7 @@ class OnboardingWindowController: NSWindowController {
         y -= 68
 
         // Section header
-        let sectionLabel = makeLabel("Which apps do you use Claude Code in?", bold: true)
+        let sectionLabel = makeLabel("Which apps do you use AI coding assistants in?", bold: true)
         sectionLabel.frame = NSRect(x: 24, y: y, width: 432, height: 18)
         contentView.addSubview(sectionLabel)
         y -= 8

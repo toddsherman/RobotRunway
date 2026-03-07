@@ -89,7 +89,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: nil)!
             }
             image.isTemplate = true
-            image.size = NSSize(width: image.size.width / 2, height: image.size.height / 2)
+            image.size = NSSize(width: image.size.width / 2.67, height: image.size.height / 2.67)
             return image
         }
 
@@ -208,7 +208,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateUI(state: MonitorState) {
         guard let button = statusItem.button else { return }
 
-        // Icon reflects real-time Claude state
+        // Icon reflects real-time AI activity state
         let claudeActive: Bool
         if case .active = state { claudeActive = true } else { claudeActive = false }
 
@@ -223,23 +223,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         switch state {
         case .noSession:
-            statusMenuItem.title = "No Claude Code session found"
+            statusMenuItem.title = "No AI coding session found"
             detailMenuItem.title = "Mac can sleep normally"
             signalMenuItem.title = "Watching \(HostAppRegistry.enabledApps.count) app(s)"
 
         case .active(let appName, let cpu, let connections, let confidence):
             statusMenuItem.title = "Keeping Mac awake"
-            detailMenuItem.title = "Claude Code active in \(appName)"
+            detailMenuItem.title = "Active in \(appName)"
             signalMenuItem.title = String(format: "CPU: %.1f%%  Net: %d conn  [%@]", cpu, connections, confidence.displayName)
 
         case .idleCooldown(let appName, let elapsed, let threshold):
             statusMenuItem.title = "Staying awake \(fmt(threshold - elapsed)) more"
-            detailMenuItem.title = "Claude Code idle in \(appName)"
+            detailMenuItem.title = "Idle in \(appName)"
             signalMenuItem.title = "Idle: \(fmt(elapsed)) / \(fmt(threshold))"
 
         case .idle(let appName, let duration):
             statusMenuItem.title = "Sleep allowed"
-            detailMenuItem.title = "Claude Code idle in \(appName) for \(fmt(duration))"
+            detailMenuItem.title = "Idle in \(appName) for \(fmt(duration))"
             signalMenuItem.title = "All signals below baseline"
 
         case .paused:

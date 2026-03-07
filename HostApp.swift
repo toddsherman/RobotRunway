@@ -1,6 +1,6 @@
 import Foundation
 
-/// Represents a terminal or IDE application that can host Claude Code sessions.
+/// Represents a terminal, IDE, or desktop app that can host AI coding sessions.
 struct HostApp: Codable, Hashable, Identifiable {
     let id: String
     let displayName: String
@@ -84,6 +84,21 @@ enum HostAppRegistry {
             displayName: "Hyper",
             processNames: ["Hyper", "Hyper Helper"],
             bundleIdentifier: "co.zeit.hyper",
+            isElectron: true
+        ),
+        HostApp(
+            id: "codex-desktop",
+            displayName: "Codex",
+            processNames: ["Codex", "Codex Helper", "Codex Helper (Renderer)"],
+            bundleIdentifier: "com.openai.codex",
+            isElectron: true
+        ),
+        HostApp(
+            id: "antigravity",
+            displayName: "Antigravity",
+            processNames: ["Antigravity Helper", "Antigravity Helper (Renderer)",
+                           "Antigravity Helper (Plugin)"],
+            bundleIdentifier: "com.google.antigravity",
             isElectron: true
         ),
     ]
