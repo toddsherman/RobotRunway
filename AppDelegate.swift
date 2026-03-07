@@ -26,6 +26,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var iconWake1: NSImage!
     private var iconWake2: NSImage!
     private var wakeAnimationFrame: Int = 0  // 0 = wake1, 1 = wake2
+    private var animationTimer: Timer?
+    private var isShowingActive = false       // current icon state
+    private var lastActiveTime: Date = .distantPast  // when activity last detected
 
     // MARK: - User Preferences
 
@@ -179,7 +182,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
             self?.tick()
         }
+
+        // Separate fast timer for icon animation (0.1s frame alternation)
+        animationTimer?.invalidate()
+        animationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            self?.animateIcon()
+        }
+
         tick()
+    }
+
+    private func animateIcon() {
+        guard let button = statusItem.button else { return }
+
+        if isShowingActive {
+            // Alternate wake frames every 0.1s
+            button.image = (wakeAnimationFrame == 0) ? iconWake1 : iconWake2
+            wakeAnimationFrame = 1 - wakeAnimationFrame
+        } else {
+            // Only show sleep icon after 5 seconds of non-active state
+            let idleFor = Date().timeIntervalSince(lastActiveTime)
+            if idleFor > 5.0 {
+                button.image = iconSleep
+                wakeAnimationFrame = 0
+            } else {
+                // Keep animating during the 2s grace period
+                button.image = (wakeAnimationFrame == 0) ? iconWake1 : iconWake2
+                wakeAnimationFrame = 1 - wakeAnimationFrame
+            }
+        }
     }
 
     private func tick() {
@@ -206,19 +237,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - UI Update
 
     private func updateUI(state: MonitorState) {
-        guard let button = statusItem.button else { return }
-
-        // Icon reflects real-time AI activity state
-        let claudeActive: Bool
-        if case .active = state { claudeActive = true } else { claudeActive = false }
-
-        if claudeActive {
-            // Alternate between wake 1 and wake 2 each poll tick (0.5s)
-            button.image = (wakeAnimationFrame == 0) ? iconWake1 : iconWake2
-            wakeAnimationFrame = 1 - wakeAnimationFrame
+        // Track active state for icon animation
+        if case .active = state {
+            isShowingActive = true
+            lastActiveTime = Date()
         } else {
-            button.image = iconSleep
-            wakeAnimationFrame = 0
+            isShowingActive = false
         }
 
         switch state {
@@ -227,19 +251,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             detailMenuItem.title = "Mac can sleep normally"
             signalMenuItem.title = "Watching \(HostAppRegistry.enabledApps.count) app(s)"
 
-        case .active(let appName, let cpu, let connections, let confidence):
+        case .active(_, let cpu, let connections, let confidence):
             statusMenuItem.title = "Keeping Mac awake"
-            detailMenuItem.title = "Active in \(appName)"
+            detailMenuItem.title = "AI activity detected"
             signalMenuItem.title = String(format: "CPU: %.1f%%  Net: %d conn  [%@]", cpu, connections, confidence.displayName)
 
-        case .idleCooldown(let appName, let elapsed, let threshold):
-            statusMenuItem.title = "Staying awake \(fmt(threshold - elapsed)) more"
-            detailMenuItem.title = "Idle in \(appName)"
-            signalMenuItem.title = "Idle: \(fmt(elapsed)) / \(fmt(threshold))"
+        case .idleCooldown(_, let elapsed, let threshold):
+            statusMenuItem.title = "Forcing awake for \(fmt(threshold - elapsed))"
+            detailMenuItem.title = "AI activity paused"
+            signalMenuItem.title = "Waiting for idle threshold"
 
-        case .idle(let appName, let duration):
+        case .idle(_, let duration):
             statusMenuItem.title = "Sleep allowed"
-            detailMenuItem.title = "Idle in \(appName) for \(fmt(duration))"
+            detailMenuItem.title = "AI apps idle for \(fmt(duration))"
             signalMenuItem.title = "All signals below baseline"
 
         case .paused:
