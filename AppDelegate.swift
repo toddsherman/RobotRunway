@@ -8,6 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let activityMonitor = ActivityMonitor()
     private let sleepManager = SleepManager()
     private var settingsController: SettingsWindowController?
+    private var logController: LogWindowController?
     private var onboardingController: OnboardingWindowController?
     private var pollTimer: Timer?
     private var isPaused = false
@@ -155,6 +156,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
+
+        let logItem = NSMenuItem(title: "Activity Log…", action: #selector(openLog), keyEquivalent: "l")
+        logItem.target = self
+        menu.addItem(logItem)
 
         let quitItem = NSMenuItem(title: "Quit RobotRunway", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
@@ -308,6 +313,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         settingsController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openLog() {
+        if logController == nil {
+            logController = LogWindowController()
+            logController?.logProvider = { [weak self] in
+                self?.activityMonitor.pollLog ?? []
+            }
+        }
+        logController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 

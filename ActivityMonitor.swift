@@ -180,6 +180,21 @@ enum MonitorState: Equatable {
     case paused
 }
 
+// MARK: - Poll Log Entry
+
+struct PollLogEntry {
+    let timestamp: Date
+    let appName: String?
+    let cpu: Double
+    let connections: Int
+    let childCount: Int
+    let score: Double?       // nil during cold start
+    let threshold: Double?   // nil during cold start
+    let isActive: Bool
+    let maturity: String
+    let stateLabel: String   // "Active", "Idle Cooldown", "Idle", "No Session"
+}
+
 // MARK: - Legacy Baseline (for migration only)
 
 struct LegacyBaseline: Codable {
@@ -220,6 +235,10 @@ class ActivityMonitor {
 
     private var idleSince: Date?
 
+    /// Rolling log of raw poll data (last 10 minutes).
+    private(set) var pollLog: [PollLogEntry] = []
+    private let pollLogMaxAge: TimeInterval = 600  // 10 minutes
+
     /// Per-host-app learned profiles.
     private(set) var profiles: [String: ActivityProfile] = [:]
 
@@ -245,6 +264,9 @@ class ActivityMonitor {
 
         guard !aiProcesses.isEmpty else {
             idleSince = nil
+            appendLogEntry(appName: nil, cpu: 0, connections: 0, childCount: 0,
+                           score: nil, threshold: nil, isActive: false,
+                           maturity: "—", stateLabel: "No Session")
             return .noSession
         }
 
@@ -273,6 +295,9 @@ class ActivityMonitor {
 
         guard let snapshot = bestSnapshot else {
             idleSince = nil
+            appendLogEntry(appName: nil, cpu: 0, connections: 0, childCount: 0,
+                           score: nil, threshold: nil, isActive: false,
+                           maturity: "—", stateLabel: "No Session")
             return .noSession
         }
 
@@ -283,6 +308,8 @@ class ActivityMonitor {
         // Classify this sample
         let isActive: Bool
         let maturity = profile.maturityLevel
+        var logScore: Double? = nil
+        var logThreshold: Double? = nil
 
         if maturity == .coldStart {
             isActive = snapshot.isActiveByHeuristic
@@ -290,6 +317,8 @@ class ActivityMonitor {
         } else {
             let (score, details) = snapshot.activityScore(profile: profile)
             isActive = score >= maturity.activityThreshold
+            logScore = score
+            logThreshold = maturity.activityThreshold
             caLog("  classify: score=\(String(format:"%.3f", score)) threshold=\(maturity.activityThreshold) active=\(isActive) maturity=\(maturity.displayName) cpu_s=\(String(format:"%.2f", details.cpu)) child_s=\(String(format:"%.2f", details.children))")
         }
 
@@ -312,9 +341,15 @@ class ActivityMonitor {
         profiles[appId] = profile
         persistIfNeeded()
 
-        // State machine (unchanged logic)
+        // State machine
         if isActive {
             idleSince = nil
+            appendLogEntry(appName: appName, cpu: snapshot.aggregateCPU,
+                           connections: snapshot.apiConnections,
+                           childCount: snapshot.childProcessCount,
+                           score: logScore, threshold: logThreshold,
+                           isActive: true, maturity: maturity.displayName,
+                           stateLabel: "Active")
             return .active(
                 hostAppName: appName,
                 cpu: snapshot.aggregateCPU,
@@ -326,6 +361,14 @@ class ActivityMonitor {
             if idleSince == nil { idleSince = now }
             let elapsed = now.timeIntervalSince(idleSince!)
 
+            let stateLabel = elapsed >= idleThresholdSeconds ? "Idle" : "Idle Cooldown"
+            appendLogEntry(appName: appName, cpu: snapshot.aggregateCPU,
+                           connections: snapshot.apiConnections,
+                           childCount: snapshot.childProcessCount,
+                           score: logScore, threshold: logThreshold,
+                           isActive: false, maturity: maturity.displayName,
+                           stateLabel: stateLabel)
+
             if elapsed >= idleThresholdSeconds {
                 return .idle(hostAppName: appName, idleDuration: elapsed)
             } else {
@@ -336,6 +379,24 @@ class ActivityMonitor {
                 )
             }
         }
+    }
+
+    // MARK: - Poll Log
+
+    private func appendLogEntry(appName: String?, cpu: Double, connections: Int,
+                                childCount: Int, score: Double?, threshold: Double?,
+                                isActive: Bool, maturity: String, stateLabel: String) {
+        let entry = PollLogEntry(
+            timestamp: Date(), appName: appName, cpu: cpu,
+            connections: connections, childCount: childCount,
+            score: score, threshold: threshold, isActive: isActive,
+            maturity: maturity, stateLabel: stateLabel
+        )
+        pollLog.append(entry)
+
+        // Trim entries older than 10 minutes
+        let cutoff = Date().addingTimeInterval(-pollLogMaxAge)
+        pollLog.removeAll { $0.timestamp < cutoff }
     }
 
     // MARK: - Signal Sampling
