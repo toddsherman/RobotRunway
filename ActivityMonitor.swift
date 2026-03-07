@@ -224,15 +224,9 @@ class ActivityMonitor {
     private var lastPersistTime: Date = .distantPast
     private let persistInterval: TimeInterval = 30
 
-    /// Cached Anthropic API IPs for connection matching.
-    private var anthropicIPs: Set<String> = []
-    private var lastIPRefresh: Date = .distantPast
-    private let ipRefreshInterval: TimeInterval = 300  // 5 minutes
-
     init() {
         migrateFromLegacyBaselinesIfNeeded()
         loadProfiles()
-        refreshAnthropicIPs()
     }
 
     /// Get the profile for a specific app.
@@ -372,49 +366,19 @@ class ActivityMonitor {
         )
     }
 
-    /// Resolve api.anthropic.com to IP addresses for connection matching.
-    private func refreshAnthropicIPs() {
-        let now = Date()
-        guard now.timeIntervalSince(lastIPRefresh) >= ipRefreshInterval else { return }
-        lastIPRefresh = now
-
-        // Use getaddrinfo via host command for both IPv4 and IPv6
-        let output = Shell.run("dig", "+short", "api.anthropic.com", "A")
-        let output6 = Shell.run("dig", "+short", "api.anthropic.com", "AAAA")
-
-        var ips = Set<String>()
-        for line in (output + "\n" + output6).split(separator: "\n") {
-            let ip = line.trimmingCharacters(in: .whitespaces)
-            if !ip.isEmpty { ips.insert(ip) }
-        }
-
-        if !ips.isEmpty {
-            anthropicIPs = ips
-            caLog("Resolved Anthropic IPs: \(ips)")
-        } else if anthropicIPs.isEmpty {
-            // Fallback hardcoded IPs (current as of 2025)
-            anthropicIPs = ["160.79.104.10", "2607:6bc0::10"]
-            caLog("Using fallback Anthropic IPs")
-        }
-    }
-
-    /// Check multiple PIDs for Anthropic API connections.
+    /// Count ESTABLISHED TCP connections to port 443 for the given PIDs.
+    /// The Claude CLI only connects to Anthropic's API over HTTPS, so any
+    /// port-443 connection from it is an Anthropic connection. This avoids
+    /// fragile IP matching that breaks when Anthropic changes infrastructure.
     private func countAnthropicConnections(pids: [Int32]) -> Int {
-        refreshAnthropicIPs()
-
         let pidList = pids.map(String.init).joined(separator: ",")
-        let output = Shell.run("lsof", "-i", "TCP", "-n", "-P", "-a", "-p", pidList)
+        let output = Shell.run("lsof", "-i", "TCP:443", "-n", "-P", "-a", "-p", pidList)
         var count = 0
 
         for line in output.split(separator: "\n") {
             let lineStr = String(line)
-            guard lineStr.contains("ESTABLISHED") || lineStr.contains("->") else { continue }
-            // Match against resolved IPs (in lsof -n output, IPs appear as ->IP:port)
-            for ip in anthropicIPs {
-                if lineStr.contains("->\(ip):") || lineStr.contains("->[\(ip)]:") {
-                    count += 1
-                    break
-                }
+            if lineStr.contains("ESTABLISHED") {
+                count += 1
             }
         }
         return count
