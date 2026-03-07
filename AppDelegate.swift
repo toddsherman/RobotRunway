@@ -18,6 +18,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var detailMenuItem: NSMenuItem!
     private var signalMenuItem: NSMenuItem!
     private var toggleMenuItem: NSMenuItem!
+    private var appsMenuItem: NSMenuItem!
 
     // MARK: - User Preferences
 
@@ -32,7 +33,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private let pollInterval: TimeInterval = 5.0
+    private let pollInterval: TimeInterval = 0.5
 
     // MARK: - Lifecycle
 
@@ -61,7 +62,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         onboardingController = OnboardingWindowController()
         onboardingController?.onComplete = { [weak self] in
             self?.onboardingController = nil
-            self?.buildStatusItem() // refresh app count
+            self?.refreshAppsMenuItem()
             self?.startPolling()
         }
         onboardingController?.showWindow(nil)
@@ -70,6 +71,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Status Bar
 
+    /// Build the status item once. Subsequent updates go through updateUI() or refreshAppsMenuItem().
     private func buildStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
@@ -103,18 +105,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if TimeInterval(seconds) == idleThresholdSeconds { item.state = .on }
             thresholdMenu.addItem(item)
         }
-        let thresholdItem = NSMenuItem(title: "Idle Threshold", action: nil, keyEquivalent: "")
+        let thresholdItem = NSMenuItem(title: "Stay Awake After Idle", action: nil, keyEquivalent: "")
         thresholdItem.submenu = thresholdMenu
         menu.addItem(thresholdItem)
 
-        // Enabled apps indicator
+        // Enabled apps indicator (updated dynamically)
         let enabledCount = HostAppRegistry.enabledApps.count
-        let appsItem = NSMenuItem(
+        appsMenuItem = NSMenuItem(
             title: "\(enabledCount) app\(enabledCount == 1 ? "" : "s") monitored",
             action: nil, keyEquivalent: ""
         )
-        appsItem.isEnabled = false
-        menu.addItem(appsItem)
+        appsMenuItem.isEnabled = false
+        menu.addItem(appsMenuItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -127,6 +129,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
 
         statusItem.menu = menu
+    }
+
+    /// Update just the apps-monitored count in the existing menu.
+    private func refreshAppsMenuItem() {
+        let enabledCount = HostAppRegistry.enabledApps.count
+        appsMenuItem.title = "\(enabledCount) app\(enabledCount == 1 ? "" : "s") monitored"
     }
 
     private func makeInfoItem(_ title: String) -> NSMenuItem {
@@ -171,18 +179,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateUI(state: MonitorState) {
         guard let button = statusItem.button else { return }
 
-        // Two-state icon: bolt when keeping awake, moon when not
-        let keepingAwake: Bool
-        switch state {
-        case .active, .idleCooldown:
-            keepingAwake = true
-        default:
-            keepingAwake = false
-        }
+        // Icon reflects real-time Claude state: bolt = actively working, moon = not
+        let claudeActive: Bool
+        if case .active = state { claudeActive = true } else { claudeActive = false }
 
         button.image = NSImage(
-            systemSymbolName: keepingAwake ? "bolt.fill" : "moon.zzz",
-            accessibilityDescription: keepingAwake ? "Keeping awake" : "Sleep allowed"
+            systemSymbolName: claudeActive ? "bolt.fill" : "moon.zzz",
+            accessibilityDescription: claudeActive ? "Claude active" : "Claude idle"
         )
 
         switch state {
@@ -197,7 +200,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             signalMenuItem.title = String(format: "CPU: %.1f%%  Net: %d conn  [%@]", cpu, connections, confidence.displayName)
 
         case .idleCooldown(let appName, let elapsed, let threshold):
-            statusMenuItem.title = "Keeping awake (idle cooldown)"
+            statusMenuItem.title = "Staying awake \(fmt(threshold - elapsed)) more"
             detailMenuItem.title = "Claude Code idle in \(appName)"
             signalMenuItem.title = "Idle: \(fmt(elapsed)) / \(fmt(threshold))"
 
@@ -241,7 +244,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.activityMonitor.profile(forAppId: appId)
             }
             settingsController?.onSettingsChanged = { [weak self] in
-                self?.buildStatusItem()
+                self?.refreshAppsMenuItem()
             }
             settingsController?.onRecalibrate = { [weak self] _ in
                 self?.activityMonitor.resetAllProfiles()

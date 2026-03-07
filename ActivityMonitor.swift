@@ -130,10 +130,11 @@ struct ActivitySnapshot {
     let childProcessCount: Int
     let timestamp: Date
 
-    // Signal weights
-    private static let networkWeight: Double = 0.55
-    private static let cpuWeight: Double = 0.30
-    private static let childWeight: Double = 0.15
+    // Signal weights — CPU is primary since HTTP/2 keeps connections
+    // open even when idle; network is a presence indicator only.
+    private static let networkWeight: Double = 0.10
+    private static let cpuWeight: Double = 0.55
+    private static let childWeight: Double = 0.35
 
     /// Compute a weighted activity score in [0, 1] using the learned profile.
     func activityScore(profile: ActivityProfile) -> (score: Double, details: SignalScores) {
@@ -158,8 +159,9 @@ struct ActivitySnapshot {
     }
 
     /// Bootstrap heuristic for cold-start classification (no learned data yet).
+    /// Network excluded: HTTP/2 keeps connections open even when idle.
     var isActiveByHeuristic: Bool {
-        anthropicConnections > 0 || aggregateCPU > 5.0 || childProcessCount > 2
+        aggregateCPU > 5.0 || childProcessCount > 2
     }
 
     private static func sigmoid(_ x: Double) -> Double {
@@ -189,6 +191,22 @@ struct LegacyBaseline: Codable {
     var isComplete: Bool = false
 }
 
+// MARK: - Debug Logging
+
+private let _logPath = (NSHomeDirectory() as NSString).appendingPathComponent("claudeawake-debug.log")
+func caLog(_ message: String) {
+    let df = DateFormatter()
+    df.dateFormat = "HH:mm:ss.SSS"
+    let line = "\(df.string(from: Date())) \(message)\n"
+    if let handle = FileHandle(forWritingAtPath: _logPath) {
+        handle.seekToEndOfFile()
+        handle.write(line.data(using: .utf8)!)
+        handle.closeFile()
+    } else {
+        FileManager.default.createFile(atPath: _logPath, contents: line.data(using: .utf8))
+    }
+}
+
 // MARK: - Activity Monitor
 
 /// Orchestrates multi-signal monitoring of Claude Code sessions
@@ -206,9 +224,15 @@ class ActivityMonitor {
     private var lastPersistTime: Date = .distantPast
     private let persistInterval: TimeInterval = 30
 
+    /// Cached Anthropic API IPs for connection matching.
+    private var anthropicIPs: Set<String> = []
+    private var lastIPRefresh: Date = .distantPast
+    private let ipRefreshInterval: TimeInterval = 300  // 5 minutes
+
     init() {
         migrateFromLegacyBaselinesIfNeeded()
         loadProfiles()
+        refreshAnthropicIPs()
     }
 
     /// Get the profile for a specific app.
@@ -232,8 +256,10 @@ class ActivityMonitor {
         var bestHostApp: HostApp?
 
         for claudeProc in claudeProcesses {
-            let hostApp = HostAppRegistry.hostApp(forProcessID: claudeProc.pid, processTable: table)
-            let snapshot = sampleSession(claudePid: claudeProc.pid, hostApp: hostApp, table: table)
+            let match = HostAppRegistry.hostApp(forProcessID: claudeProc.pid, processTable: table)
+            let hostApp = match?.app
+            let hostAppPid = match?.pid
+            let snapshot = sampleSession(claudePid: claudeProc.pid, hostApp: hostApp, hostAppPid: hostAppPid, table: table)
 
             if let existing = bestSnapshot {
                 if snapshot.anthropicConnections > existing.anthropicConnections ||
@@ -262,9 +288,11 @@ class ActivityMonitor {
 
         if maturity == .coldStart {
             isActive = snapshot.isActiveByHeuristic
+            caLog("  classify: heuristic=\(isActive) maturity=coldStart samples=\(profile.totalSamples)")
         } else {
-            let (score, _) = snapshot.activityScore(profile: profile)
+            let (score, details) = snapshot.activityScore(profile: profile)
             isActive = score >= maturity.activityThreshold
+            caLog("  classify: score=\(String(format:"%.3f", score)) threshold=\(maturity.activityThreshold) active=\(isActive) maturity=\(maturity.displayName) cpu_s=\(String(format:"%.2f", details.cpu)) child_s=\(String(format:"%.2f", details.children))")
         }
 
         // Continuous learning: update the appropriate distribution
@@ -314,11 +342,25 @@ class ActivityMonitor {
 
     // MARK: - Signal Sampling
 
-    private func sampleSession(claudePid: Int32, hostApp: HostApp?, table: [Int32: ProcessInfo]) -> ActivitySnapshot {
+    private func sampleSession(claudePid: Int32, hostApp: HostApp?, hostAppPid: Int32?, table: [Int32: ProcessInfo]) -> ActivitySnapshot {
         let children = ProcessTable.descendants(of: claudePid, in: table)
         let claudeCPU = table[claudePid]?.cpu ?? 0
         let totalCPU = children.reduce(claudeCPU) { $0 + $1.cpu }
-        let connections = countAnthropicConnections(pid: claudePid)
+
+        // Check claude CLI process for Anthropic connections
+        var connections = countAnthropicConnections(pids: [claudePid])
+
+        // For Electron host apps (e.g. Claude Desktop), also check the host app's
+        // entire process tree — renderer child processes make API calls.
+        if connections == 0, let hostPid = hostAppPid, hostPid != claudePid,
+           hostApp?.isElectron == true {
+            let hostChildren = ProcessTable.descendants(of: hostPid, in: table)
+            let allHostPids = [hostPid] + hostChildren.map(\.pid)
+            connections = countAnthropicConnections(pids: allHostPids)
+            caLog("  host tree check: hostPid=\(hostPid) pids=\(allHostPids.count) connections=\(connections)")
+        }
+
+        caLog("  sample: claudePid=\(claudePid) cpu=\(String(format:"%.1f", totalCPU)) net=\(connections) children=\(children.count)")
 
         return ActivitySnapshot(
             claudePid: claudePid,
@@ -330,18 +372,48 @@ class ActivityMonitor {
         )
     }
 
-    private func countAnthropicConnections(pid: Int32) -> Int {
-        let output = Shell.run("lsof", "-i", "TCP", "-n", "-P", "-a", "-p", "\(pid)")
-        let anthropicHosts = ["api.anthropic.com", "anthropic.com"]
+    /// Resolve api.anthropic.com to IP addresses for connection matching.
+    private func refreshAnthropicIPs() {
+        let now = Date()
+        guard now.timeIntervalSince(lastIPRefresh) >= ipRefreshInterval else { return }
+        lastIPRefresh = now
+
+        // Use getaddrinfo via host command for both IPv4 and IPv6
+        let output = Shell.run("dig", "+short", "api.anthropic.com", "A")
+        let output6 = Shell.run("dig", "+short", "api.anthropic.com", "AAAA")
+
+        var ips = Set<String>()
+        for line in (output + "\n" + output6).split(separator: "\n") {
+            let ip = line.trimmingCharacters(in: .whitespaces)
+            if !ip.isEmpty { ips.insert(ip) }
+        }
+
+        if !ips.isEmpty {
+            anthropicIPs = ips
+            caLog("Resolved Anthropic IPs: \(ips)")
+        } else if anthropicIPs.isEmpty {
+            // Fallback hardcoded IPs (current as of 2025)
+            anthropicIPs = ["160.79.104.10", "2607:6bc0::10"]
+            caLog("Using fallback Anthropic IPs")
+        }
+    }
+
+    /// Check multiple PIDs for Anthropic API connections.
+    private func countAnthropicConnections(pids: [Int32]) -> Int {
+        refreshAnthropicIPs()
+
+        let pidList = pids.map(String.init).joined(separator: ",")
+        let output = Shell.run("lsof", "-i", "TCP", "-n", "-P", "-a", "-p", pidList)
         var count = 0
 
         for line in output.split(separator: "\n") {
             let lineStr = String(line)
-            if lineStr.contains("ESTABLISHED") || lineStr.contains("->") {
-                for host in anthropicHosts {
-                    if lineStr.lowercased().contains(host.lowercased()) {
-                        count += 1
-                    }
+            guard lineStr.contains("ESTABLISHED") || lineStr.contains("->") else { continue }
+            // Match against resolved IPs (in lsof -n output, IPs appear as ->IP:port)
+            for ip in anthropicIPs {
+                if lineStr.contains("->\(ip):") || lineStr.contains("->[\(ip)]:") {
+                    count += 1
+                    break
                 }
             }
         }

@@ -41,7 +41,7 @@ enum HostAppRegistry {
             id: "claude-desktop",
             displayName: "Claude Desktop",
             processNames: ["Claude"],
-            bundleIdentifier: "com.anthropic.claude",
+            bundleIdentifier: "com.anthropic.claudefordesktop",
             isElectron: true
         ),
         HostApp(
@@ -54,7 +54,7 @@ enum HostAppRegistry {
         HostApp(
             id: "vscode",
             displayName: "VS Code",
-            processNames: ["Electron", "Code Helper", "Code Helper (Renderer)"],
+            processNames: ["Code Helper", "Code Helper (Renderer)"],
             bundleIdentifier: "com.microsoft.VSCode",
             isElectron: true
         ),
@@ -94,14 +94,17 @@ enum HostAppRegistry {
     }
 
     /// Find which host app a process belongs to by walking up the process tree.
-    static func hostApp(forProcessID pid: Int32, processTable: [Int32: ProcessInfo]) -> HostApp? {
+    /// Returns the matched HostApp and the PID of the host app's process.
+    static func hostApp(forProcessID pid: Int32, processTable: [Int32: ProcessInfo]) -> (app: HostApp, pid: Int32)? {
         let enabledNames = Set(enabledApps.flatMap(\.processNames))
         var current: Int32? = pid
 
         while let p = current, let info = processTable[p] {
             let baseName = (info.command as NSString).lastPathComponent
             if enabledNames.contains(baseName) {
-                return enabledApps.first { $0.processNames.contains(baseName) }
+                if let app = enabledApps.first(where: { $0.processNames.contains(baseName) }) {
+                    return (app, p)
+                }
             }
             current = info.ppid
             // Prevent infinite loop at pid 0/1

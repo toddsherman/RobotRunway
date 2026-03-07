@@ -16,11 +16,12 @@ enum Shell {
         task.standardError = FileHandle.nullDevice
         do {
             try task.run()
-            task.waitUntilExit()
         } catch {
             return ""
         }
+        // Read pipe BEFORE waitUntilExit to avoid deadlock when output fills the buffer
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
         return (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
