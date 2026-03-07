@@ -1,0 +1,422 @@
+import Foundation
+
+// MARK: - Running Statistics
+
+/// Running statistics for a single signal using exponential moving averages.
+/// O(1) memory, O(1) per update, trivially serializable.
+struct SignalStats: Codable {
+    var mean: Double = 0
+    var variance: Double = 0
+    var min: Double = .infinity
+    var max: Double = 0
+    var sampleCount: Int = 0
+
+    /// Update with a new observation using exponential moving average.
+    mutating func update(value: Double, alpha: Double) {
+        sampleCount += 1
+        if sampleCount == 1 {
+            mean = value
+            variance = 0
+            min = value
+            max = value
+            return
+        }
+        let diff = value - mean
+        mean += alpha * diff
+        // Welford-like online variance with EMA weighting
+        variance = (1 - alpha) * (variance + alpha * diff * diff)
+        if value < min { min = value }
+        if value > max { max = value }
+    }
+
+    var stdDev: Double { sqrt(Swift.max(variance, 0)) }
+}
+
+// MARK: - Maturity Level
+
+/// How mature a profile is, based on cumulative sample count.
+enum MaturityLevel: Int, Codable, Comparable {
+    case coldStart = 0    // < 6 samples (~30s of Claude usage)
+    case learning = 1     // 6-59 samples (~30s to 5min)
+    case developing = 2   // 60-359 samples (~5min to 30min)
+    case mature = 3       // 360+ samples (~30min+)
+
+    static func < (lhs: MaturityLevel, rhs: MaturityLevel) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+
+    var displayName: String {
+        switch self {
+        case .coldStart:  return "Starting"
+        case .learning:   return "Learning"
+        case .developing: return "Developing"
+        case .mature:     return "Mature"
+        }
+    }
+
+    /// EMA learning rate — decreases as profile matures for stability.
+    var alpha: Double {
+        switch self {
+        case .coldStart:  return 0.3
+        case .learning:   return 0.15
+        case .developing: return 0.05
+        case .mature:     return 0.02
+        }
+    }
+
+    /// Activity score threshold — starts cautious, tightens with confidence.
+    var activityThreshold: Double {
+        switch self {
+        case .coldStart:  return 0.15
+        case .learning:   return 0.25
+        case .developing: return 0.35
+        case .mature:     return 0.40
+        }
+    }
+}
+
+// MARK: - Activity Profile
+
+/// Learned activity profile for a host app. Tracks separate idle and active
+/// distributions for each signal, continuously refined over time.
+struct ActivityProfile: Codable {
+    // Idle distributions (one per signal)
+    var idleCPU = SignalStats()
+    var idleNetwork = SignalStats()
+    var idleChildren = SignalStats()
+
+    // Active distributions (one per signal)
+    var activeCPU = SignalStats()
+    var activeNetwork = SignalStats()
+    var activeChildren = SignalStats()
+
+    // Metadata
+    var totalSamples: Int = 0
+    var idleSamples: Int = 0
+    var activeSamples: Int = 0
+    var createdAt: Date = Date()
+    var lastUpdatedAt: Date = Date()
+
+    var version: Int = 1
+
+    var maturityLevel: MaturityLevel {
+        if totalSamples < 6 { return .coldStart }
+        if totalSamples < 60 { return .learning }
+        if totalSamples < 360 { return .developing }
+        return .mature
+    }
+}
+
+// MARK: - Signal Scores
+
+/// Per-signal contribution to the overall activity score.
+struct SignalScores {
+    let network: Double
+    let cpu: Double
+    let children: Double
+}
+
+// MARK: - Activity Snapshot
+
+/// A snapshot of activity signals for a Claude Code session.
+struct ActivitySnapshot {
+    let claudePid: Int32
+    let hostApp: HostApp?
+    /// Aggregate CPU% of the claude process + all its children.
+    let aggregateCPU: Double
+    /// Number of established TCP connections to Anthropic API endpoints.
+    let anthropicConnections: Int
+    /// Number of child processes under the claude process.
+    let childProcessCount: Int
+    let timestamp: Date
+
+    // Signal weights
+    private static let networkWeight: Double = 0.55
+    private static let cpuWeight: Double = 0.30
+    private static let childWeight: Double = 0.15
+
+    /// Compute a weighted activity score in [0, 1] using the learned profile.
+    func activityScore(profile: ActivityProfile) -> (score: Double, details: SignalScores) {
+        // Network: binary — any Anthropic connection = definitely active
+        let networkScore: Double = anthropicConnections > 0 ? 1.0 : 0.0
+
+        // CPU: sigmoid of z-score relative to idle distribution
+        let idleCPUStdDev = Swift.max(profile.idleCPU.stdDev, 1.0)
+        let cpuZScore = (aggregateCPU - profile.idleCPU.mean) / idleCPUStdDev
+        let cpuScore = ActivitySnapshot.sigmoid(cpuZScore - 2.0)
+
+        // Children: sigmoid of z-score relative to idle distribution
+        let idleChildStdDev = Swift.max(profile.idleChildren.stdDev, 0.5)
+        let childZScore = (Double(childProcessCount) - profile.idleChildren.mean) / idleChildStdDev
+        let childScore = ActivitySnapshot.sigmoid(childZScore - 1.5)
+
+        let score = Self.networkWeight * networkScore
+                  + Self.cpuWeight * cpuScore
+                  + Self.childWeight * childScore
+
+        return (score, SignalScores(network: networkScore, cpu: cpuScore, children: childScore))
+    }
+
+    /// Bootstrap heuristic for cold-start classification (no learned data yet).
+    var isActiveByHeuristic: Bool {
+        anthropicConnections > 0 || aggregateCPU > 5.0 || childProcessCount > 2
+    }
+
+    private static func sigmoid(_ x: Double) -> Double {
+        1.0 / (1.0 + exp(-x))
+    }
+}
+
+// MARK: - Monitor State
+
+/// Represents the overall state of Claude Code monitoring.
+enum MonitorState: Equatable {
+    case noSession
+    case active(hostAppName: String, cpu: Double, connections: Int, confidence: MaturityLevel)
+    case idleCooldown(hostAppName: String, elapsed: TimeInterval, threshold: TimeInterval)
+    case idle(hostAppName: String, idleDuration: TimeInterval)
+    case paused
+}
+
+// MARK: - Legacy Baseline (for migration only)
+
+struct LegacyBaseline: Codable {
+    var cpu: Double = 2.0
+    var cpuMargin: Double = 5.0
+    var networkConnections: Int = 0
+    var childCount: Int = 0
+    var sampleCount: Int = 0
+    var isComplete: Bool = false
+}
+
+// MARK: - Activity Monitor
+
+/// Orchestrates multi-signal monitoring of Claude Code sessions
+/// with continuous adaptive learning.
+class ActivityMonitor {
+
+    var idleThresholdSeconds: TimeInterval = 120
+
+    private var idleSince: Date?
+
+    /// Per-host-app learned profiles.
+    private(set) var profiles: [String: ActivityProfile] = [:]
+
+    /// Throttled persistence.
+    private var lastPersistTime: Date = .distantPast
+    private let persistInterval: TimeInterval = 30
+
+    init() {
+        migrateFromLegacyBaselinesIfNeeded()
+        loadProfiles()
+    }
+
+    /// Get the profile for a specific app.
+    func profile(forAppId appId: String) -> ActivityProfile? {
+        profiles[appId]
+    }
+
+    // MARK: - Main Poll
+
+    func poll() -> MonitorState {
+        let table = ProcessTable.snapshot()
+        let claudeProcesses = ProcessTable.findClaudeProcesses(in: table)
+
+        guard !claudeProcesses.isEmpty else {
+            idleSince = nil
+            return .noSession
+        }
+
+        // Find the most active Claude session
+        var bestSnapshot: ActivitySnapshot?
+        var bestHostApp: HostApp?
+
+        for claudeProc in claudeProcesses {
+            let hostApp = HostAppRegistry.hostApp(forProcessID: claudeProc.pid, processTable: table)
+            let snapshot = sampleSession(claudePid: claudeProc.pid, hostApp: hostApp, table: table)
+
+            if let existing = bestSnapshot {
+                if snapshot.anthropicConnections > existing.anthropicConnections ||
+                   snapshot.aggregateCPU > existing.aggregateCPU {
+                    bestSnapshot = snapshot
+                    bestHostApp = hostApp
+                }
+            } else {
+                bestSnapshot = snapshot
+                bestHostApp = hostApp
+            }
+        }
+
+        guard let snapshot = bestSnapshot else {
+            idleSince = nil
+            return .noSession
+        }
+
+        let appId = bestHostApp?.id ?? "unknown"
+        let appName = bestHostApp?.displayName ?? "Unknown Terminal"
+        var profile = profiles[appId] ?? ActivityProfile()
+
+        // Classify this sample
+        let isActive: Bool
+        let maturity = profile.maturityLevel
+
+        if maturity == .coldStart {
+            isActive = snapshot.isActiveByHeuristic
+        } else {
+            let (score, _) = snapshot.activityScore(profile: profile)
+            isActive = score >= maturity.activityThreshold
+        }
+
+        // Continuous learning: update the appropriate distribution
+        let a = maturity.alpha
+        if isActive {
+            profile.activeCPU.update(value: snapshot.aggregateCPU, alpha: a)
+            profile.activeNetwork.update(value: Double(snapshot.anthropicConnections), alpha: a)
+            profile.activeChildren.update(value: Double(snapshot.childProcessCount), alpha: a)
+            profile.activeSamples += 1
+        } else {
+            profile.idleCPU.update(value: snapshot.aggregateCPU, alpha: a)
+            profile.idleNetwork.update(value: Double(snapshot.anthropicConnections), alpha: a)
+            profile.idleChildren.update(value: Double(snapshot.childProcessCount), alpha: a)
+            profile.idleSamples += 1
+        }
+        profile.totalSamples += 1
+        profile.lastUpdatedAt = Date()
+
+        profiles[appId] = profile
+        persistIfNeeded()
+
+        // State machine (unchanged logic)
+        if isActive {
+            idleSince = nil
+            return .active(
+                hostAppName: appName,
+                cpu: snapshot.aggregateCPU,
+                connections: snapshot.anthropicConnections,
+                confidence: profile.maturityLevel
+            )
+        } else {
+            let now = Date()
+            if idleSince == nil { idleSince = now }
+            let elapsed = now.timeIntervalSince(idleSince!)
+
+            if elapsed >= idleThresholdSeconds {
+                return .idle(hostAppName: appName, idleDuration: elapsed)
+            } else {
+                return .idleCooldown(
+                    hostAppName: appName,
+                    elapsed: elapsed,
+                    threshold: idleThresholdSeconds
+                )
+            }
+        }
+    }
+
+    // MARK: - Signal Sampling
+
+    private func sampleSession(claudePid: Int32, hostApp: HostApp?, table: [Int32: ProcessInfo]) -> ActivitySnapshot {
+        let children = ProcessTable.descendants(of: claudePid, in: table)
+        let claudeCPU = table[claudePid]?.cpu ?? 0
+        let totalCPU = children.reduce(claudeCPU) { $0 + $1.cpu }
+        let connections = countAnthropicConnections(pid: claudePid)
+
+        return ActivitySnapshot(
+            claudePid: claudePid,
+            hostApp: hostApp,
+            aggregateCPU: totalCPU,
+            anthropicConnections: connections,
+            childProcessCount: children.count,
+            timestamp: Date()
+        )
+    }
+
+    private func countAnthropicConnections(pid: Int32) -> Int {
+        let output = Shell.run("lsof", "-i", "TCP", "-n", "-P", "-a", "-p", "\(pid)")
+        let anthropicHosts = ["api.anthropic.com", "anthropic.com"]
+        var count = 0
+
+        for line in output.split(separator: "\n") {
+            let lineStr = String(line)
+            if lineStr.contains("ESTABLISHED") || lineStr.contains("->") {
+                for host in anthropicHosts {
+                    if lineStr.lowercased().contains(host.lowercased()) {
+                        count += 1
+                    }
+                }
+            }
+        }
+        return count
+    }
+
+    // MARK: - Profile Management
+
+    func resetProfile(appId: String) {
+        profiles.removeValue(forKey: appId)
+        saveProfiles()
+    }
+
+    func resetAllProfiles() {
+        profiles.removeAll()
+        saveProfiles()
+        NSLog("[ClaudeAwake] All learned profiles reset")
+    }
+
+    // MARK: - Persistence
+
+    func saveProfiles() {
+        if let data = try? JSONEncoder().encode(profiles) {
+            UserDefaults.standard.set(data, forKey: "activityProfiles")
+        }
+        lastPersistTime = Date()
+    }
+
+    private func persistIfNeeded() {
+        let now = Date()
+        guard now.timeIntervalSince(lastPersistTime) >= persistInterval else { return }
+        saveProfiles()
+    }
+
+    private func loadProfiles() {
+        guard let data = UserDefaults.standard.data(forKey: "activityProfiles"),
+              let decoded = try? JSONDecoder().decode([String: ActivityProfile].self, from: data) else { return }
+        profiles = decoded
+    }
+
+    // MARK: - Migration
+
+    private func migrateFromLegacyBaselinesIfNeeded() {
+        guard let oldData = UserDefaults.standard.data(forKey: "calibrationBaselines"),
+              UserDefaults.standard.data(forKey: "activityProfiles") == nil,
+              let oldBaselines = try? JSONDecoder().decode([String: LegacyBaseline].self, from: oldData)
+        else { return }
+
+        for (appId, old) in oldBaselines where old.isComplete {
+            var profile = ActivityProfile()
+            profile.idleCPU = SignalStats(
+                mean: old.cpu,
+                variance: pow(old.cpuMargin / 3.0, 2),
+                min: old.cpu, max: old.cpu,
+                sampleCount: old.sampleCount
+            )
+            profile.idleNetwork = SignalStats(
+                mean: Double(old.networkConnections),
+                variance: 0, min: Double(old.networkConnections),
+                max: Double(old.networkConnections),
+                sampleCount: old.sampleCount
+            )
+            profile.idleChildren = SignalStats(
+                mean: Double(old.childCount),
+                variance: 0.25, min: Double(old.childCount),
+                max: Double(old.childCount),
+                sampleCount: old.sampleCount
+            )
+            profile.totalSamples = old.sampleCount
+            profile.idleSamples = old.sampleCount
+            profiles[appId] = profile
+        }
+
+        saveProfiles()
+        UserDefaults.standard.removeObject(forKey: "calibrationBaselines")
+        NSLog("[ClaudeAwake] Migrated %d legacy baseline(s) to activity profiles", oldBaselines.count)
+    }
+}
