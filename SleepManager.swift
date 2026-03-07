@@ -13,7 +13,7 @@ class SleepManager {
     private var displayAssertionID: IOPMAssertionID = 0
     private(set) var isPreventingSleep = false
 
-    private let reason = "ClaudeAwake: Claude Code is actively working" as CFString
+    private let reason = "RobotRunway: AI coding assistant is actively working" as CFString
 
     /// Engage both sleep prevention assertions.
     func preventSleep() {
@@ -39,7 +39,7 @@ class SleepManager {
             // Clean up partial success
             if sysResult == kIOReturnSuccess { IOPMAssertionRelease(systemAssertionID) }
             if dispResult == kIOReturnSuccess { IOPMAssertionRelease(displayAssertionID) }
-            NSLog("[ClaudeAwake] Failed to create power assertions: sys=%d disp=%d", sysResult, dispResult)
+            NSLog("[RobotRunway] Failed to create power assertions: sys=%d disp=%d", sysResult, dispResult)
         }
     }
 

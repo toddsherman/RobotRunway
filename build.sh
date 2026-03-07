@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # ─────────────────────────────────────────────────────────
-# ClaudeAwake Build Script
+# RobotRunway Build Script
 # ─────────────────────────────────────────────────────────
 
-APP_NAME="ClaudeAwake"
+APP_NAME="RobotRunway"
 BUILD_DIR="build"
 APP_BUNDLE="${BUILD_DIR}/${APP_NAME}.app"
 CONTENTS="${APP_BUNDLE}/Contents"
@@ -32,7 +32,7 @@ fi
 echo "   Architecture: ${ARCH} → target ${TARGET}"
 
 # Collect all Swift source files
-SOURCES=$(find "${SRC_DIR}" -name "*.swift" | sort)
+SOURCES=$(find "${SRC_DIR}" -maxdepth 1 -name "*.swift" | sort)
 echo "   Sources:"
 for src in $SOURCES; do
     echo "     - ${src}"
@@ -66,4 +66,4 @@ echo "To run:"
 echo "  open ${APP_BUNDLE}"
 echo ""
 echo "To launch at login:"
-echo "  System Settings → General → Login Items → add ClaudeAwake"
+echo "  System Settings → General → Login Items → add RobotRunway"

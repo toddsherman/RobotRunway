@@ -31,15 +31,17 @@ struct ProcessInfo {
     let pid: Int32
     let ppid: Int32
     let cpu: Double
-    let command: String // full path or name
+    let command: String // full command line (args) for matching
 }
 
 /// Builds a snapshot of the process table.
 enum ProcessTable {
 
-    /// Parse `ps -eo pid,ppid,pcpu,comm` into a lookup table.
+    /// Parse `ps -eo pid,ppid,pcpu,args` into a lookup table.
+    /// Uses `args` (not `comm`) to capture the full command line,
+    /// which is needed to detect Node.js-based CLIs like Gemini.
     static func snapshot() -> [Int32: ProcessInfo] {
-        let output = Shell.run("ps", "-eo", "pid,ppid,pcpu,comm")
+        let output = Shell.run("ps", "-eo", "pid,ppid,pcpu,args")
         var table: [Int32: ProcessInfo] = [:]
 
         for line in output.split(separator: "\n") {
@@ -58,11 +60,13 @@ enum ProcessTable {
     /// Find all descendants of a given PID (children, grandchildren, etc.)
     static func descendants(of pid: Int32, in table: [Int32: ProcessInfo]) -> [ProcessInfo] {
         var result: [ProcessInfo] = []
+        var visited: Set<Int32> = [pid]
         var queue: [Int32] = [pid]
 
         while !queue.isEmpty {
             let current = queue.removeFirst()
-            for (childPid, info) in table where info.ppid == current && childPid != pid {
+            for (childPid, info) in table where info.ppid == current && !visited.contains(childPid) {
+                visited.insert(childPid)
                 result.append(info)
                 queue.append(childPid)
             }
@@ -71,18 +75,41 @@ enum ProcessTable {
         return result
     }
 
-    /// Known AI coding assistant process names.
+    /// Known AI coding assistant process names (matched against the executable basename).
     static let aiProcessNames: Set<String> = [
         "claude",                       // Anthropic Claude Code
         "codex",                        // OpenAI Codex
-        "language_server_macos_arm",    // Google Antigravity (Gemini)
+        "gemini",                       // Google Gemini CLI (Node.js script)
+        "language_server_macos_arm",    // Google Antigravity (Gemini desktop)
     ]
 
-    /// Find all PIDs whose command basename matches a known AI assistant.
+    /// Extract the executable basename from a full `args` command string.
+    /// For "node /opt/homebrew/bin/gemini ..." this returns "node".
+    /// For "/usr/bin/claude --flag" this returns "claude".
+    static func executableBasename(from args: String) -> String {
+        guard let firstToken = args.split(separator: " ", maxSplits: 1).first else { return args }
+        return (String(firstToken) as NSString).lastPathComponent
+    }
+
+    /// Check if a command args string references a known AI tool.
+    /// Scans all space-separated tokens for known basenames. This handles:
+    /// - Direct executables: `claude`, `/usr/local/bin/claude --flag`
+    /// - Interpreter scripts: `node /opt/homebrew/bin/gemini`
+    /// - Paths with spaces: `/Library/Application Support/.../claude`
+    ///   (ps args output is unquoted, so the path splits into tokens
+    ///    like `Support/.../claude` whose basename still matches)
+    static func matchesAIProcess(_ args: String) -> Bool {
+        for token in args.split(separator: " ") {
+            let baseName = (String(token) as NSString).lastPathComponent.lowercased()
+            if aiProcessNames.contains(baseName) { return true }
+        }
+        return false
+    }
+
+    /// Find all PIDs whose command matches a known AI assistant.
     static func findAIProcesses(in table: [Int32: ProcessInfo]) -> [ProcessInfo] {
         table.values.filter { info in
-            let baseName = (info.command as NSString).lastPathComponent
-            return aiProcessNames.contains(baseName)
+            matchesAIProcess(info.command)
         }
     }
 }

@@ -1,157 +1,152 @@
-# ClaudeAwake ☕
+# RobotRunway
 
-A native macOS menu bar app that keeps your Mac awake while Claude Code is working — and lets it sleep when Claude is done.
+A native macOS menu bar app that keeps your Mac awake while AI coding assistants are working — and lets it sleep when they're done.
 
 ## The Problem
 
-You kick off a Claude Code task, walk away, and come back to find your Mac went to sleep mid-task. ClaudeAwake solves this by intelligently detecting when Claude Code is actively working and preventing sleep until it's finished.
+You kick off a task in Claude Code, Codex, or Gemini, walk away, and come back to find your Mac went to sleep mid-task. RobotRunway detects when AI assistants are actively working and prevents sleep until they're finished.
+
+## Supported AI Tools
+
+| Tool | Detection Method |
+|------|-----------------|
+| Claude Code (CLI) | Process name `claude` |
+| Codex (CLI) | Process name `codex` |
+| Gemini (CLI) | Node.js script detection |
+| Claude Desktop | Electron process tree |
+| Codex Desktop | Electron process tree |
+| Antigravity (Gemini) | `language_server_macos_arm` process |
 
 ## How It Works
 
 ### Multi-Signal Activity Detection
 
-Unlike simple CPU-threshold approaches, ClaudeAwake uses three signals to reliably detect activity:
+RobotRunway uses three signals to reliably detect activity:
 
-1. **Network connections to Anthropic's API** (strongest signal) — When Claude Code is thinking or generating, it maintains a streaming connection to `api.anthropic.com`. When idle at the prompt, there are no connections. Detected via `lsof`.
+1. **CPU usage** (primary signal, weight 0.55) — Aggregate CPU of the AI process and all its children (build tools, test runners, etc.). Scored via sigmoid of z-score relative to learned idle distribution.
 
-2. **CPU usage** (corroborating signal) — Aggregate CPU of the `claude` process and all its children (build tools, test runners, etc.). Compared against a learned baseline rather than a fixed threshold.
+2. **Child process count** (weight 0.35) — When AI tools run commands, they spawn child processes. A changing process tree indicates active work.
 
-3. **Child process count** (supporting signal) — When Claude Code runs commands, it spawns child processes. A changing process tree indicates active work.
+3. **Network connections** (weight 0.10) — Any established TCP connection on port 443 indicates API communication. Low weight because HTTP/2 keeps persistent connections even when idle.
 
-If **any** signal is above baseline → Mac stays awake.
-If **all** signals are at baseline for the full idle threshold → Mac can sleep.
+### Continuous Adaptive Learning
 
-### Adaptive Baseline Calibration
+RobotRunway continuously learns each app's activity patterns using exponential moving averages (EMA):
 
-Every terminal app has different baseline resource usage. ClaudeAwake automatically calibrates when it first detects Claude Code running in each app:
-
-- Samples activity for ~30 seconds
-- Records median CPU, network connections, and child process count
-- Calculates a safe margin above baseline
-- Stores per-app, persists across launches
-- Can be reset anytime from Settings
+- Maintains separate idle and active distributions for each signal
+- Learning rate adapts with maturity: aggressive early (alpha=0.3), stable when mature (alpha=0.02)
+- Per-app profiles persist across launches
+- Four maturity levels: Cold Start → Learning → Developing → Mature
+- Activity thresholds tighten as the profile gains confidence
 
 ### Supported Host Apps
 
-ClaudeAwake monitors Claude Code running inside any of these:
+RobotRunway monitors AI tools running inside any of these:
 
 | App | Auto-detected |
 |-----|:---:|
-| Terminal.app | ✓ |
-| iTerm2 | ✓ |
-| Claude Desktop | ✓ |
-| Warp | ✓ |
-| VS Code | ✓ |
-| Cursor | ✓ |
-| Kitty | ✓ |
-| Alacritty | ✓ |
-| Hyper | ✓ |
+| Terminal.app | yes |
+| iTerm2 | yes |
+| Claude Desktop | yes |
+| Warp | yes |
+| VS Code | yes |
+| Cursor | yes |
+| Kitty | yes |
+| Alacritty | yes |
+| Hyper | yes |
+| Codex Desktop | yes |
+| Antigravity | yes |
 
-On first launch, installed apps are automatically enabled. You can toggle them in Settings.
+On first launch, installed apps are automatically enabled. Toggle them in Settings.
 
 ## Install
 
 ### Build from source
 
 ```bash
-cd ClaudeAwake
+cd RobotRunway
 chmod +x build.sh
 ./build.sh
 
 # Install
-cp -r build/ClaudeAwake.app /Applications/
+cp -r build/RobotRunway.app /Applications/
 
 # Run
-open /Applications/ClaudeAwake.app
+open /Applications/RobotRunway.app
 ```
 
 ### Launch at Login
 
-System Settings → General → Login Items → add ClaudeAwake
+System Settings → General → Login Items → add RobotRunway
 
 ## Menu Bar
 
-Click the icon to see:
+The menu bar icon is a robot that animates when AI activity is detected:
 
-| Icon | Meaning |
-|------|---------|
-| ☕ `cup.and.saucer.fill` | Claude Code is active — Mac will stay awake |
-| 😴 `moon.zzz` | No activity — Mac can sleep normally |
-| ⏸ `pause.circle` | Monitoring paused by user |
+- **Sleeping robot** — No activity, Mac can sleep normally
+- **Animated robot** — AI is active, Mac will stay awake
 
-The menu shows real-time details: which app Claude is running in, current CPU, active network connections, and idle countdown progress.
+The dropdown menu shows real-time details: which app the AI is running in, current CPU, active connections, profile maturity, and idle countdown progress.
 
 ## Settings
 
-Open Settings (⌘,) to:
+Open Settings (Cmd+,) to:
 
-- **Enable/disable host apps** — Only monitor the terminals you use
-- **Reset calibrations** — Force re-learning of baselines (useful if your workflow changed)
+- **Enable/disable host apps** — Only monitor the apps you use
+- **Reset learned profiles** — Start fresh with cautious defaults (useful if your workflow changed significantly)
 
-The **idle threshold** (how long to wait after activity stops before allowing sleep) is configurable from the menu bar: 1, 2, 3, 5, or 10 minutes. Default is 2 minutes.
+The **idle threshold** (how long to stay awake after activity stops) is configurable from the menu bar: 1, 2, 3, 5, or 10 minutes. Default is 2 minutes.
 
 ## Architecture
 
 ```
-main.swift                    Entry point
-AppDelegate.swift             Menu bar UI, polling loop, sleep control
-ActivityMonitor.swift         Multi-signal engine, state machine, calibration
-ProcessUtils.swift            Process table parsing, tree walking, shell commands
-HostApp.swift                 Host app registry, detection, preferences
-SettingsWindowController.swift  Settings window UI
-SleepManager.swift            IOPMLib power assertion management
+main.swift                      Entry point
+AppDelegate.swift               Menu bar UI, polling loop, icon animation
+ActivityMonitor.swift           Multi-signal engine, continuous learning, EMA profiles
+ProcessUtils.swift              Process table parsing, tree walking, AI process detection
+HostApp.swift                   Host app registry, process tree matching
+OnboardingWindowController.swift  First-launch app selection
+SettingsWindowController.swift  Settings window UI, profile status display
+SleepManager.swift              IOPMLib power assertion management
 ```
 
 ### State Machine
 
 ```
-┌─────────────┐   claude process found   ┌─────────────────────┐
-│  NO SESSION  │ ──────────────────────→  │  CALIBRATING (30s)  │
-│  sleep OK    │                          │  stay awake          │
-└─────────────┘                           └──────────┬──────────┘
+                         AI process found
+  NO SESSION ──────────────────────────────────→ ACTIVE
+  (sleep OK)                                     (stay awake)
        ↑                                              │
-       │ process exits                    calibration complete
+       │ process exits              all signals below threshold
        │                                              ↓
-       │                                  ┌─────────────────────┐
-       │          any signal active       │      ACTIVE          │
-       │        ┌─────────────────────── │  stay awake          │
-       │        │                         └──────────┬──────────┘
-       │        │                                     │
-       │        │                        all signals at baseline
-       │        │                                     ↓
-       │        │                         ┌─────────────────────┐
-       │        └──────────────────────── │  IDLE COOLDOWN       │
-       │                                  │  stay awake          │
-       │                                  └──────────┬──────────┘
-       │                                              │
-       │                                   threshold exceeded
-       │                                              ↓
-       │                                  ┌─────────────────────┐
-       └────────────────────────────────  │      IDLE            │
-                                          │  sleep OK            │
-                                          └─────────────────────┘
+       │              signal resumes            IDLE COOLDOWN
+       │            ┌──────────────────────── (stay awake)
+       │            │                               │
+       │            │                     threshold exceeded
+       │            │                               ↓
+       └────────────┴─────────────────────────── IDLE
+                                                 (sleep OK)
 ```
 
 ## Technical Notes
 
 - **No dock icon** — Runs as a menu bar agent (`LSUIElement = true`)
 - **No special permissions** — Uses `ps` and `lsof` for process info, IOPMLib for sleep control
-- **Low overhead** — Polls every 5 seconds; `ps` + `lsof` are lightweight
-- **Process tree walking** — Traces from `claude` process up through the tree to identify the host app
-- **Requires macOS 13+** (Ventura) for SF Symbols in the menu bar
+- **Polls every 0.5 seconds** — `ps` for process table, `lsof` for network connections
+- **Process tree walking** — Traces from AI process up through the tree to identify the host app
+- **Requires macOS 13+** (Ventura)
 
 ## Troubleshooting
 
-**"No Claude Code session found" but Claude Code is running:**
+**"No AI coding session found" but an AI tool is running:**
 - Make sure the host app is enabled in Settings
-- Check that the `claude` CLI is the process name (not a wrapper script with a different name)
+- Check that the AI CLI process is running (e.g., `ps aux | grep claude`)
 
 **Mac still sleeps during active work:**
-- Reset calibrations in Settings — the baseline may be stale
+- Reset learned profiles in Settings — the profile may have learned incorrect patterns
 - Try increasing the idle threshold to 5 or 10 minutes
-- Check Activity Monitor to verify ClaudeAwake's power assertion is active (search for "ClaudeAwake" in assertions)
 
 **Verify power assertions from Terminal:**
 ```bash
-pmset -g assertions | grep ClaudeAwake
+pmset -g assertions | grep RobotRunway
 ```

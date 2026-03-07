@@ -7,13 +7,19 @@ class OnboardingWindowController: NSWindowController {
     var onComplete: (() -> Void)?
 
     convenience init() {
+        // Compute height dynamically: header area + checkboxes + button area
+        let headerHeight: CGFloat = 282
+        let checkboxHeight: CGFloat = CGFloat(HostAppRegistry.allApps.count) * 26
+        let buttonArea: CGFloat = 64
+        let windowHeight = headerHeight + checkboxHeight + buttonArea
+
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 540),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: windowHeight),
             styleMask: [.titled],
             backing: .buffered,
             defer: false
         )
-        window.title = "Welcome to ClaudeAwake"
+        window.title = "Welcome to RobotRunway"
         window.center()
         window.isReleasedWhenClosed = false
 
@@ -31,7 +37,7 @@ class OnboardingWindowController: NSWindowController {
         var y = contentView.bounds.height - 36
 
         // App name
-        let titleLabel = makeLabel("ClaudeAwake", bold: true, size: 20)
+        let titleLabel = makeLabel("RobotRunway", bold: true, size: 20)
         titleLabel.frame = NSRect(x: 24, y: y, width: 432, height: 28)
         contentView.addSubview(titleLabel)
         y -= 32
@@ -46,7 +52,7 @@ class OnboardingWindowController: NSWindowController {
 
         // Explanation
         let explanation = makeLabel(
-            "ClaudeAwake sits in your menu bar and monitors AI coding activity " +
+            "RobotRunway sits in your menu bar and monitors AI coding activity " +
             "(Claude, Codex, Gemini). It prevents your Mac from sleeping during " +
             "active work and allows sleep when idle."
         )
@@ -60,7 +66,7 @@ class OnboardingWindowController: NSWindowController {
 
         // Learning explanation
         let learningNote = makeLabel(
-            "Activity detection improves over time. ClaudeAwake continuously learns " +
+            "Activity detection improves over time. RobotRunway continuously learns " +
             "each app's patterns to precisely distinguish active work from idle sessions."
         )
         learningNote.frame = NSRect(x: 24, y: y - 32, width: 432, height: 48)

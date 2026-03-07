@@ -10,18 +10,30 @@ class SettingsWindowController: NSWindowController {
     var profileProvider: ((String) -> ActivityProfile?)?
 
     convenience init() {
+        // Compute height dynamically: header area + checkboxes + bottom controls
+        let headerHeight: CGFloat = 88
+        let checkboxHeight: CGFloat = CGFloat(HostAppRegistry.allApps.count) * 30
+        let bottomArea: CGFloat = 180
+        let windowHeight = headerHeight + checkboxHeight + bottomArea
+
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 480),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: windowHeight),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
-        window.title = "ClaudeAwake Settings"
+        window.title = "RobotRunway Settings"
         window.center()
         window.isReleasedWhenClosed = false
 
         self.init(window: window)
+    }
+
+    override func showWindow(_ sender: Any?) {
+        // Rebuild UI each time so profile labels reflect current data
+        checkboxes.removeAll()
         setupUI()
+        super.showWindow(sender)
     }
 
     private func setupUI() {
@@ -94,7 +106,7 @@ class SettingsWindowController: NSWindowController {
 
         // Info text
         let infoLabel = makeLabel(
-            "ClaudeAwake continuously learns each app's activity patterns using " +
+            "RobotRunway continuously learns each app's activity patterns using " +
             "network, CPU, and process signals. Profiles become more accurate " +
             "over time. Reset profiles if your workflow has changed significantly."
         )
@@ -145,7 +157,7 @@ class SettingsWindowController: NSWindowController {
     @objc private func resetProfiles() {
         let alert = NSAlert()
         alert.messageText = "Reset Learned Profiles?"
-        alert.informativeText = "This will clear all learned activity patterns. ClaudeAwake will start fresh with cautious defaults and re-learn over time."
+        alert.informativeText = "This will clear all learned activity patterns. RobotRunway will start fresh with cautious defaults and re-learn over time."
         alert.addButton(withTitle: "Reset")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning

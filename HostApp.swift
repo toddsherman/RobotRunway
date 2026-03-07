@@ -115,7 +115,8 @@ enum HostAppRegistry {
         var current: Int32? = pid
 
         while let p = current, let info = processTable[p] {
-            let baseName = (info.command as NSString).lastPathComponent
+            // Extract the executable basename from the full args string
+            let baseName = ProcessTable.executableBasename(from: info.command)
             if enabledNames.contains(baseName) {
                 if let app = enabledApps.first(where: { $0.processNames.contains(baseName) }) {
                     return (app, p)

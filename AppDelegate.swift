@@ -153,7 +153,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
-        let quitItem = NSMenuItem(title: "Quit ClaudeAwake", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit RobotRunway", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 

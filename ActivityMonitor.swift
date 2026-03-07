@@ -118,15 +118,15 @@ struct SignalScores {
 
 // MARK: - Activity Snapshot
 
-/// A snapshot of activity signals for a Claude Code session.
+/// A snapshot of activity signals for an AI coding session.
 struct ActivitySnapshot {
-    let claudePid: Int32
+    let aiPid: Int32
     let hostApp: HostApp?
-    /// Aggregate CPU% of the claude process + all its children.
+    /// Aggregate CPU% of the AI process + all its children.
     let aggregateCPU: Double
-    /// Number of established TCP connections to Anthropic API endpoints.
-    let anthropicConnections: Int
-    /// Number of child processes under the claude process.
+    /// Number of established TCP connections to API endpoints (port 443).
+    let apiConnections: Int
+    /// Number of child processes under the AI process.
     let childProcessCount: Int
     let timestamp: Date
 
@@ -138,8 +138,8 @@ struct ActivitySnapshot {
 
     /// Compute a weighted activity score in [0, 1] using the learned profile.
     func activityScore(profile: ActivityProfile) -> (score: Double, details: SignalScores) {
-        // Network: binary — any Anthropic connection = definitely active
-        let networkScore: Double = anthropicConnections > 0 ? 1.0 : 0.0
+        // Network: binary — any API connection = definitely active
+        let networkScore: Double = apiConnections > 0 ? 1.0 : 0.0
 
         // CPU: sigmoid of z-score relative to idle distribution
         let idleCPUStdDev = Swift.max(profile.idleCPU.stdDev, 1.0)
@@ -193,11 +193,14 @@ struct LegacyBaseline: Codable {
 
 // MARK: - Debug Logging
 
-private let _logPath = (NSHomeDirectory() as NSString).appendingPathComponent("claudeawake-debug.log")
-func caLog(_ message: String) {
+private let _logPath = (NSHomeDirectory() as NSString).appendingPathComponent("robotrunway-debug.log")
+private let _logDateFormatter: DateFormatter = {
     let df = DateFormatter()
     df.dateFormat = "HH:mm:ss.SSS"
-    let line = "\(df.string(from: Date())) \(message)\n"
+    return df
+}()
+func caLog(_ message: String) {
+    let line = "\(_logDateFormatter.string(from: Date())) \(message)\n"
     if let handle = FileHandle(forWritingAtPath: _logPath) {
         handle.seekToEndOfFile()
         handle.write(line.data(using: .utf8)!)
@@ -251,12 +254,13 @@ class ActivityMonitor {
 
         for aiProc in aiProcesses {
             let match = HostAppRegistry.hostApp(forProcessID: aiProc.pid, processTable: table)
-            let hostApp = match?.app
+            // Only monitor AI processes running inside enabled host apps
+            guard let hostApp = match?.app else { continue }
             let hostAppPid = match?.pid
             let snapshot = sampleSession(aiPid: aiProc.pid, hostApp: hostApp, hostAppPid: hostAppPid, table: table)
 
             if let existing = bestSnapshot {
-                if snapshot.anthropicConnections > existing.anthropicConnections ||
+                if snapshot.apiConnections > existing.apiConnections ||
                    snapshot.aggregateCPU > existing.aggregateCPU {
                     bestSnapshot = snapshot
                     bestHostApp = hostApp
@@ -272,8 +276,8 @@ class ActivityMonitor {
             return .noSession
         }
 
-        let appId = bestHostApp?.id ?? "unknown"
-        let appName = bestHostApp?.displayName ?? "Unknown Terminal"
+        let appId = bestHostApp!.id
+        let appName = bestHostApp!.displayName
         var profile = profiles[appId] ?? ActivityProfile()
 
         // Classify this sample
@@ -293,12 +297,12 @@ class ActivityMonitor {
         let a = maturity.alpha
         if isActive {
             profile.activeCPU.update(value: snapshot.aggregateCPU, alpha: a)
-            profile.activeNetwork.update(value: Double(snapshot.anthropicConnections), alpha: a)
+            profile.activeNetwork.update(value: Double(snapshot.apiConnections), alpha: a)
             profile.activeChildren.update(value: Double(snapshot.childProcessCount), alpha: a)
             profile.activeSamples += 1
         } else {
             profile.idleCPU.update(value: snapshot.aggregateCPU, alpha: a)
-            profile.idleNetwork.update(value: Double(snapshot.anthropicConnections), alpha: a)
+            profile.idleNetwork.update(value: Double(snapshot.apiConnections), alpha: a)
             profile.idleChildren.update(value: Double(snapshot.childProcessCount), alpha: a)
             profile.idleSamples += 1
         }
@@ -314,7 +318,7 @@ class ActivityMonitor {
             return .active(
                 hostAppName: appName,
                 cpu: snapshot.aggregateCPU,
-                connections: snapshot.anthropicConnections,
+                connections: snapshot.apiConnections,
                 confidence: profile.maturityLevel
             )
         } else {
@@ -344,23 +348,28 @@ class ActivityMonitor {
         // Check AI process for API connections
         var connections = countAPIConnections(pids: [aiPid])
 
-        // For Electron host apps, also check the host app's entire process
-        // tree — renderer child processes may make the API calls.
+        // For Electron host apps, also check AI-related processes in the
+        // host tree — but only processes matching known AI names, not the
+        // entire tree (which would count unrelated HTTPS traffic).
         if connections == 0, let hostPid = hostAppPid, hostPid != aiPid,
            hostApp?.isElectron == true {
             let hostChildren = ProcessTable.descendants(of: hostPid, in: table)
-            let allHostPids = [hostPid] + hostChildren.map(\.pid)
-            connections = countAPIConnections(pids: allHostPids)
-            caLog("  host tree check: hostPid=\(hostPid) pids=\(allHostPids.count) connections=\(connections)")
+            let aiRelatedPids = hostChildren
+                .filter { ProcessTable.matchesAIProcess($0.command) }
+                .map(\.pid)
+            if !aiRelatedPids.isEmpty {
+                connections = countAPIConnections(pids: aiRelatedPids)
+                caLog("  host tree check: hostPid=\(hostPid) aiPids=\(aiRelatedPids.count) connections=\(connections)")
+            }
         }
 
         caLog("  sample: aiPid=\(aiPid) cpu=\(String(format:"%.1f", totalCPU)) net=\(connections) children=\(children.count)")
 
         return ActivitySnapshot(
-            claudePid: aiPid,
+            aiPid: aiPid,
             hostApp: hostApp,
             aggregateCPU: totalCPU,
-            anthropicConnections: connections,
+            apiConnections: connections,
             childProcessCount: children.count,
             timestamp: Date()
         )
@@ -393,7 +402,7 @@ class ActivityMonitor {
     func resetAllProfiles() {
         profiles.removeAll()
         saveProfiles()
-        NSLog("[ClaudeAwake] All learned profiles reset")
+        NSLog("[RobotRunway] All learned profiles reset")
     }
 
     // MARK: - Persistence
@@ -452,6 +461,6 @@ class ActivityMonitor {
 
         saveProfiles()
         UserDefaults.standard.removeObject(forKey: "calibrationBaselines")
-        NSLog("[ClaudeAwake] Migrated %d legacy baseline(s) to activity profiles", oldBaselines.count)
+        NSLog("[RobotRunway] Migrated %d legacy baseline(s) to activity profiles", oldBaselines.count)
     }
 }
