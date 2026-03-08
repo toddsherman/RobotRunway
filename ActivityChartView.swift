@@ -172,22 +172,22 @@ class ActivityChartView: NSView {
         let maxConn = max(Double(entries.map(\.connections).max() ?? 1), 1)
         let maxChildren = max(Double(entries.map(\.childCount).max() ?? 1), 1)
 
-        // Draw lines in back-to-front order (score on top)
-        drawLine(ctx, chartRect: chartRect, color: childrenColor, lineWidth: 0.75,
+        // Draw supporting lines at 50% transparency
+        drawLine(ctx, chartRect: chartRect, color: childrenColor.withAlphaComponent(0.5), lineWidth: 0.75,
                  points: entries.map { (timestamp: $0.timestamp, value: Double($0.childCount) / maxChildren) })
 
-        drawLine(ctx, chartRect: chartRect, color: connectionsColor, lineWidth: 0.75,
+        drawLine(ctx, chartRect: chartRect, color: connectionsColor.withAlphaComponent(0.5), lineWidth: 0.75,
                  points: entries.map { (timestamp: $0.timestamp, value: Double($0.connections) / maxConn) })
 
-        drawLine(ctx, chartRect: chartRect, color: cpuColor, lineWidth: 0.75,
+        drawLine(ctx, chartRect: chartRect, color: cpuColor.withAlphaComponent(0.5), lineWidth: 0.75,
                  points: entries.map { (timestamp: $0.timestamp, value: $0.cpu / maxCPU) })
 
-        // Score line — skip nil values (cold start), slightly thicker for emphasis
+        // Score line — prominent, skip nil values (cold start)
         let scorePoints = entries.compactMap { e -> (timestamp: Date, value: Double)? in
             guard let s = e.score else { return nil }
             return (timestamp: e.timestamp, value: s)
         }
-        drawLine(ctx, chartRect: chartRect, color: scoreColor, lineWidth: 1.25, points: scorePoints)
+        drawLine(ctx, chartRect: chartRect, color: scoreColor, lineWidth: 2.0, points: scorePoints)
     }
 
     private func drawLine(_ ctx: CGContext, chartRect: NSRect, color: NSColor, lineWidth: CGFloat,
