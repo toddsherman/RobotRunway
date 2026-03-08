@@ -24,12 +24,21 @@ class ActivityChartView: NSView {
         return df
     }()
 
+    // Cached time range — computed once per draw pass to avoid thousands of Date allocations
+    private var drawStartTime: Date = .distantPast
+    private var drawEndTime: Date = .distantPast
+
     override var isFlipped: Bool { false }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+
+        // Compute time range once for this entire draw pass
+        let now = Date()
+        drawStartTime = now.addingTimeInterval(-600)
+        drawEndTime = now
 
         let chartRect = NSRect(
             x: marginLeft,
@@ -45,19 +54,12 @@ class ActivityChartView: NSView {
         drawDataLines(ctx, chartRect: chartRect)
     }
 
-    // MARK: - Time Range
-
-    private func timeRange() -> (start: Date, end: Date) {
-        let now = Date()
-        let start = now.addingTimeInterval(-600) // 10 minutes ago
-        return (start, now)
-    }
+    // MARK: - Coordinate Conversion
 
     private func xPosition(for date: Date, in chartRect: NSRect) -> CGFloat {
-        let (start, end) = timeRange()
-        let total = end.timeIntervalSince(start)
+        let total = drawEndTime.timeIntervalSince(drawStartTime)
         guard total > 0 else { return chartRect.minX }
-        let fraction = date.timeIntervalSince(start) / total
+        let fraction = date.timeIntervalSince(drawStartTime) / total
         return chartRect.minX + CGFloat(fraction) * chartRect.width
     }
 
@@ -129,9 +131,8 @@ class ActivityChartView: NSView {
         }
 
         // X-axis time labels (every minute)
-        let (start, _) = timeRange()
         for minute in 0...10 {
-            let date = start.addingTimeInterval(Double(minute) * 60)
+            let date = drawStartTime.addingTimeInterval(Double(minute) * 60)
             let x = xPosition(for: date, in: chartRect)
 
             // Tick
@@ -161,10 +162,17 @@ class ActivityChartView: NSView {
     private func drawDataLines(_ ctx: CGContext, chartRect: NSRect) {
         guard !entries.isEmpty else { return }
 
-        // Compute max values for normalization
-        let maxCPU = max(entries.map(\.cpu).max() ?? 1, 1)
-        let maxConn = max(Double(entries.map(\.connections).max() ?? 1), 1)
-        let maxChildren = max(Double(entries.map(\.childCount).max() ?? 1), 1)
+        // Single-pass computation of max values for normalization
+        var maxCPU: Double = 1
+        var maxConn: Double = 1
+        var maxChildren: Double = 1
+        for entry in entries {
+            if entry.cpu > maxCPU { maxCPU = entry.cpu }
+            let conn = Double(entry.connections)
+            if conn > maxConn { maxConn = conn }
+            let children = Double(entry.childCount)
+            if children > maxChildren { maxChildren = children }
+        }
 
         // Draw supporting lines at 50% transparency
         drawLine(ctx, chartRect: chartRect, color: childrenColor.withAlphaComponent(0.5), lineWidth: 0.75,

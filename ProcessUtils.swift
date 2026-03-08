@@ -1,13 +1,16 @@
 import Foundation
+import os
 
 /// Lightweight wrapper for running shell commands and capturing output.
 enum Shell {
-    /// Run a command and return trimmed stdout.
-    static func run(_ args: String...) -> String {
-        run(args)
+    /// Run a command and return trimmed stdout. Variadic convenience.
+    static func run(_ args: String..., timeout: TimeInterval = 10) -> String {
+        run(args, timeout: timeout)
     }
 
-    static func run(_ args: [String]) -> String {
+    /// Run a command with a timeout. If the process doesn't exit within `timeout`
+    /// seconds, it is terminated and an empty string is returned.
+    static func run(_ args: [String], timeout: TimeInterval = 10) -> String {
         let task = Process()
         let pipe = Pipe()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -17,11 +20,29 @@ enum Shell {
         do {
             try task.run()
         } catch {
+            Log.shell.error("Failed to launch \(args.first ?? "?", privacy: .public): \(error.localizedDescription)")
             return ""
         }
+
+        // Timeout watchdog — terminates the process if it exceeds the deadline
+        let watchdog = DispatchWorkItem { [weak task] in
+            guard let task = task, task.isRunning else { return }
+            task.terminate()
+            Log.shell.warning("Timeout (\(timeout, format: .fixed(precision: 1))s) for: \(args.joined(separator: " "), privacy: .public)")
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
+
         // Read pipe BEFORE waitUntilExit to avoid deadlock when output fills the buffer
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
+        watchdog.cancel()
+
+        // If the process was killed by our watchdog, return empty
+        if task.terminationReason == .uncaughtSignal {
+            Log.shell.error("Process terminated by signal for: \(args.first ?? "?", privacy: .public)")
+            return ""
+        }
+
         return (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
@@ -37,14 +58,14 @@ struct ProcessInfo {
 /// Builds a snapshot of the process table.
 enum ProcessTable {
 
-    /// Parse `ps -eo pid,ppid,pcpu,args` into a lookup table.
-    /// Uses `args` (not `comm`) to capture the full command line,
-    /// which is needed to detect Node.js-based CLIs like Gemini.
-    static func snapshot() -> [Int32: ProcessInfo] {
-        let output = Shell.run("ps", "-eo", "pid,ppid,pcpu,args")
+    /// Parse `ps -eo pid,ppid,pcpu,args` output into a lookup table.
+    /// Exposed as a separate method for testability.
+    static func parse(psOutput: String) -> [Int32: ProcessInfo] {
         var table: [Int32: ProcessInfo] = [:]
+        let lines = psOutput.split(separator: "\n")
 
-        for line in output.split(separator: "\n") {
+        // Skip header line ("PID PPID %CPU ARGS")
+        for line in lines.dropFirst() {
             let parts = line.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
             guard parts.count >= 4,
                   let pid = Int32(parts[0]),
@@ -57,18 +78,34 @@ enum ProcessTable {
         return table
     }
 
+    /// Snapshot the current process table via `ps`.
+    static func snapshot() -> [Int32: ProcessInfo] {
+        let output = Shell.run("ps", "-eo", "pid,ppid,pcpu,args", timeout: 5)
+        return parse(psOutput: output)
+    }
+
     /// Find all descendants of a given PID (children, grandchildren, etc.)
+    /// Uses a pre-built parent→children index for O(N) total instead of
+    /// scanning the entire table per BFS level.
     static func descendants(of pid: Int32, in table: [Int32: ProcessInfo]) -> [ProcessInfo] {
+        // Build parent → children lookup in O(N)
+        var childrenOf: [Int32: [Int32]] = [:]
+        for (childPid, info) in table {
+            childrenOf[info.ppid, default: []].append(childPid)
+        }
+
         var result: [ProcessInfo] = []
         var visited: Set<Int32> = [pid]
         var queue: [Int32] = [pid]
 
         while !queue.isEmpty {
             let current = queue.removeFirst()
-            for (childPid, info) in table where info.ppid == current && !visited.contains(childPid) {
+            for childPid in childrenOf[current] ?? [] where !visited.contains(childPid) {
                 visited.insert(childPid)
-                result.append(info)
-                queue.append(childPid)
+                if let info = table[childPid] {
+                    result.append(info)
+                    queue.append(childPid)
+                }
             }
         }
 

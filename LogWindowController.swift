@@ -47,6 +47,11 @@ class LogWindowController: NSWindowController {
     /// Chart width = scroll view width × this factor (10 screens for 10 minutes → ~1 min visible).
     private let chartWidthMultiplier: CGFloat = 10
 
+    deinit {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+    }
+
     convenience init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 700, height: 450),

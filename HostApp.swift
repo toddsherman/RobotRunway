@@ -14,7 +14,10 @@ struct HostApp: Codable, Hashable, Identifiable {
 
     var isEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: "hostApp.enabled.\(id)") }
-        nonmutating set { UserDefaults.standard.set(newValue, forKey: "hostApp.enabled.\(id)") }
+        nonmutating set {
+            UserDefaults.standard.set(newValue, forKey: "hostApp.enabled.\(id)")
+            HostAppRegistry.invalidateCache()
+        }
     }
 
 }
@@ -103,21 +106,79 @@ enum HostAppRegistry {
         ),
     ]
 
-    /// Returns only the apps the user has enabled.
-    static var enabledApps: [HostApp] {
-        allApps.filter(\.isEnabled)
+    // MARK: - Enabled Apps Cache
+
+    /// Cached set of enabled app IDs. Avoids 11 UserDefaults reads per poll cycle.
+    private static var _enabledAppIds: Set<String>?
+
+    /// Call when any app's enabled state changes to refresh the cache.
+    static func invalidateCache() {
+        _enabledAppIds = nil
     }
+
+    private static var enabledAppIds: Set<String> {
+        if let cached = _enabledAppIds { return cached }
+        let ids = Set(allApps.filter {
+            UserDefaults.standard.bool(forKey: "hostApp.enabled.\($0.id)")
+        }.map(\.id))
+        _enabledAppIds = ids
+        return ids
+    }
+
+    /// Returns only the apps the user has enabled. Cached; invalidated on change.
+    static var enabledApps: [HostApp] {
+        let ids = enabledAppIds
+        return allApps.filter { ids.contains($0.id) }
+    }
+
+    // MARK: - Host App Matching
 
     /// Find which host app a process belongs to by walking up the process tree.
     /// Returns the matched HostApp and the PID of the host app's process.
+    ///
+    /// Pre-computes lookup structures once per call for efficient matching:
+    /// - Single-word names: O(1) dictionary lookup per token basename
+    /// - Multi-word names: prefix/path-boundary matching
     static func hostApp(forProcessID pid: Int32, processTable: [Int32: ProcessInfo]) -> (app: HostApp, pid: Int32)? {
         let enabled = enabledApps
+
+        // Pre-compute lookup structures once per call
+        var singleWordLookup: [String: HostApp] = [:]
+        var multiWordEntries: [(HostApp, [String])] = []
+
+        for app in enabled {
+            var multis: [String] = []
+            for name in app.processNames {
+                if name.contains(" ") {
+                    multis.append(name)
+                } else {
+                    singleWordLookup[name] = app
+                }
+            }
+            if !multis.isEmpty {
+                multiWordEntries.append((app, multis))
+            }
+        }
+
         var current: Int32? = pid
 
         while let p = current, let info = processTable[p] {
-            if let app = matchHostApp(command: info.command, in: enabled) {
-                return (app, p)
+            // Check single-word names via token basenames
+            for token in info.command.split(separator: " ") {
+                let basename = (String(token) as NSString).lastPathComponent
+                if let app = singleWordLookup[basename] {
+                    return (app, p)
+                }
             }
+
+            // Check multi-word names via path boundary matching
+            for (app, names) in multiWordEntries {
+                for name in names {
+                    if info.command.hasPrefix(name) { return (app, p) }
+                    if info.command.contains("/\(name)") { return (app, p) }
+                }
+            }
+
             current = info.ppid
             // Prevent infinite loop at pid 0/1
             if current == p || current == 0 { break }
@@ -127,12 +188,8 @@ enum HostAppRegistry {
     }
 
     /// Match a command string against known host app process names.
-    /// Uses two strategies to handle `ps args` output where paths are unquoted:
-    /// - Names without spaces: check basenames of all space-separated tokens
-    ///   (handles paths like `/Applications/Visual Studio Code.app/.../Electron`)
-    /// - Names with spaces: match at path component boundaries (after `/` or
-    ///   at start of command) to avoid false matches against arbitrary arguments.
-    private static func matchHostApp(command: String, in apps: [HostApp]) -> HostApp? {
+    /// Exposed as internal for testing.
+    static func matchHostApp(command: String, in apps: [HostApp]) -> HostApp? {
         let tokenBasenames = command.split(separator: " ").map {
             (String($0) as NSString).lastPathComponent
         }
@@ -140,7 +197,6 @@ enum HostAppRegistry {
         for app in apps {
             for name in app.processNames {
                 if name.contains(" ") {
-                    // Match at path boundaries: preceded by "/" or at start of command
                     if command.hasPrefix(name) { return app }
                     if command.contains("/\(name)") { return app }
                 } else {

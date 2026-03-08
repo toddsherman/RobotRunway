@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - Running Statistics
 
@@ -7,7 +8,7 @@ import Foundation
 struct SignalStats: Codable {
     var mean: Double = 0
     var variance: Double = 0
-    var min: Double = .infinity
+    var min: Double = .greatestFiniteMagnitude
     var max: Double = 0
     var sampleCount: Int = 0
 
@@ -132,9 +133,9 @@ struct ActivitySnapshot {
 
     // Signal weights — CPU is primary since HTTP/2 keeps connections
     // open even when idle; network is a presence indicator only.
-    private static let networkWeight: Double = 0.10
-    private static let cpuWeight: Double = 0.55
-    private static let childWeight: Double = 0.35
+    static let networkWeight: Double = 0.10
+    static let cpuWeight: Double = 0.55
+    static let childWeight: Double = 0.35
 
     /// Compute a weighted activity score in [0, 1] using the learned profile.
     func activityScore(profile: ActivityProfile) -> (score: Double, details: SignalScores) {
@@ -164,7 +165,7 @@ struct ActivitySnapshot {
         aggregateCPU > 5.0 || childProcessCount > 2
     }
 
-    private static func sigmoid(_ x: Double) -> Double {
+    static func sigmoid(_ x: Double) -> Double {
         1.0 / (1.0 + exp(-x))
     }
 }
@@ -206,25 +207,6 @@ struct LegacyBaseline: Codable {
     var isComplete: Bool = false
 }
 
-// MARK: - Debug Logging
-
-private let _logPath = (NSHomeDirectory() as NSString).appendingPathComponent("robotrunway-debug.log")
-private let _logDateFormatter: DateFormatter = {
-    let df = DateFormatter()
-    df.dateFormat = "HH:mm:ss.SSS"
-    return df
-}()
-func caLog(_ message: String) {
-    let line = "\(_logDateFormatter.string(from: Date())) \(message)\n"
-    if let handle = FileHandle(forWritingAtPath: _logPath) {
-        handle.seekToEndOfFile()
-        handle.write(line.data(using: .utf8)!)
-        handle.closeFile()
-    } else {
-        FileManager.default.createFile(atPath: _logPath, contents: line.data(using: .utf8))
-    }
-}
-
 // MARK: - Activity Monitor
 
 /// Orchestrates multi-signal monitoring of Claude Code sessions
@@ -233,11 +215,17 @@ class ActivityMonitor {
 
     var idleThresholdSeconds: TimeInterval = 120
 
+    // NOTE: Single idleSince shared across all detected apps. This is intentional:
+    // we only care about the "best" (most active) session for sleep management.
+    // Per-app idle tracking would add complexity without clear UX benefit since
+    // sleep is a system-wide concern.
     private var idleSince: Date?
 
     /// Rolling log of raw poll data (last 10 minutes).
-    private(set) var pollLog: [PollLogEntry] = []
+    /// Access via currentPollLog() for thread-safe reads from other threads.
+    private var pollLog: [PollLogEntry] = []
     private let pollLogMaxAge: TimeInterval = 600  // 10 minutes
+    private let pollLogLock = NSLock()
 
     /// Per-host-app learned profiles.
     private(set) var profiles: [String: ActivityProfile] = [:]
@@ -254,6 +242,14 @@ class ActivityMonitor {
     /// Get the profile for a specific app.
     func profile(forAppId appId: String) -> ActivityProfile? {
         profiles[appId]
+    }
+
+    /// Thread-safe snapshot of the current poll log.
+    /// Called from main thread by LogWindowController while poll runs on background queue.
+    func currentPollLog() -> [PollLogEntry] {
+        pollLogLock.lock()
+        defer { pollLogLock.unlock() }
+        return pollLog
     }
 
     // MARK: - Main Poll
@@ -280,7 +276,17 @@ class ActivityMonitor {
             let maturity: MaturityLevel
         }
 
-        var sessions: [ClassifiedSession] = []
+        // Phase 1: Build process tree data, collect all PIDs needing network check
+        struct SessionData {
+            let aiProc: ProcessInfo
+            let hostApp: HostApp
+            let hostAppPid: Int32?
+            let children: [ProcessInfo]
+            let totalCPU: Double
+            let networkPids: [Int32]
+        }
+
+        var sessionDataList: [SessionData] = []
 
         for aiProc in aiProcesses {
             let match = HostAppRegistry.hostApp(forProcessID: aiProc.pid, processTable: table)
@@ -289,9 +295,53 @@ class ActivityMonitor {
 
             // Skip if the AI process IS the host app itself (e.g. main Electron process)
             if let hostPid = hostAppPid, aiProc.pid == hostPid { continue }
-            let snapshot = sampleSession(aiPid: aiProc.pid, hostApp: hostApp, hostAppPid: hostAppPid, table: table)
 
-            var profile = profiles[hostApp.id] ?? ActivityProfile()
+            let children = ProcessTable.descendants(of: aiProc.pid, in: table)
+            let aiCPU = table[aiProc.pid]?.cpu ?? 0
+            let totalCPU = children.reduce(aiCPU) { $0 + $1.cpu }
+
+            // Collect PIDs for network check
+            var networkPids: [Int32] = [aiProc.pid]
+            if let hostPid = hostAppPid, hostPid != aiProc.pid,
+               hostApp.isElectron {
+                let hostChildren = ProcessTable.descendants(of: hostPid, in: table)
+                let aiRelatedPids = hostChildren
+                    .filter { ProcessTable.matchesAIProcess($0.command) }
+                    .map(\.pid)
+                if !aiRelatedPids.isEmpty {
+                    networkPids.append(contentsOf: aiRelatedPids)
+                    Log.monitor.debug("host tree check: hostPid=\(hostPid) aiPids=\(aiRelatedPids.count)")
+                }
+            }
+
+            sessionDataList.append(SessionData(
+                aiProc: aiProc, hostApp: hostApp, hostAppPid: hostAppPid,
+                children: children, totalCPU: totalCPU, networkPids: networkPids
+            ))
+        }
+
+        // Phase 2: Single batch lsof call for all PIDs
+        let allNetworkPids = Array(Set(sessionDataList.flatMap(\.networkPids)))
+        let connectionCounts = batchCountAPIConnections(pids: allNetworkPids)
+
+        // Phase 3: Classify each session using batch results
+        var sessions: [ClassifiedSession] = []
+
+        for data in sessionDataList {
+            let connections = data.networkPids.reduce(0) { $0 + (connectionCounts[$1] ?? 0) }
+
+            Log.monitor.debug("sample: aiPid=\(data.aiProc.pid) cpu=\(data.totalCPU, format: .fixed(precision: 1)) net=\(connections) children=\(data.children.count)")
+
+            let snapshot = ActivitySnapshot(
+                aiPid: data.aiProc.pid,
+                hostApp: data.hostApp,
+                aggregateCPU: data.totalCPU,
+                apiConnections: connections,
+                childProcessCount: data.children.count,
+                timestamp: Date()
+            )
+
+            var profile = profiles[data.hostApp.id] ?? ActivityProfile()
             let maturity = profile.maturityLevel
             let isActive: Bool
             var logScore: Double? = nil
@@ -299,13 +349,13 @@ class ActivityMonitor {
 
             if maturity == .coldStart {
                 isActive = snapshot.isActiveByHeuristic
-                caLog("  classify \(hostApp.displayName): heuristic=\(isActive) maturity=coldStart samples=\(profile.totalSamples)")
+                Log.monitor.debug("classify \(data.hostApp.displayName, privacy: .public): heuristic=\(isActive) maturity=coldStart samples=\(profile.totalSamples)")
             } else {
                 let (score, details) = snapshot.activityScore(profile: profile)
                 isActive = score >= maturity.activityThreshold
                 logScore = score
                 logThreshold = maturity.activityThreshold
-                caLog("  classify \(hostApp.displayName): score=\(String(format:"%.3f", score)) threshold=\(maturity.activityThreshold) active=\(isActive) maturity=\(maturity.displayName) cpu_s=\(String(format:"%.2f", details.cpu)) child_s=\(String(format:"%.2f", details.children))")
+                Log.monitor.debug("classify \(data.hostApp.displayName, privacy: .public): score=\(score, format: .fixed(precision: 3)) threshold=\(maturity.activityThreshold) active=\(isActive) maturity=\(maturity.displayName, privacy: .public) cpu_s=\(details.cpu, format: .fixed(precision: 2)) child_s=\(details.children, format: .fixed(precision: 2))")
             }
 
             // Continuous learning for each app
@@ -323,10 +373,10 @@ class ActivityMonitor {
             }
             profile.totalSamples += 1
             profile.lastUpdatedAt = Date()
-            profiles[hostApp.id] = profile
+            profiles[data.hostApp.id] = profile
 
             // Log entry for this app
-            appendLogEntry(appName: hostApp.displayName, cpu: snapshot.aggregateCPU,
+            appendLogEntry(appName: data.hostApp.displayName, cpu: snapshot.aggregateCPU,
                            connections: snapshot.apiConnections,
                            childCount: snapshot.childProcessCount,
                            score: logScore, threshold: logThreshold,
@@ -334,7 +384,7 @@ class ActivityMonitor {
                            stateLabel: isActive ? "Active" : "Idle")
 
             sessions.append(ClassifiedSession(
-                snapshot: snapshot, hostApp: hostApp, isActive: isActive,
+                snapshot: snapshot, hostApp: data.hostApp, isActive: isActive,
                 score: logScore, threshold: logThreshold, maturity: maturity
             ))
         }
@@ -393,65 +443,42 @@ class ActivityMonitor {
             score: score, threshold: threshold, isActive: isActive,
             maturity: maturity, stateLabel: stateLabel
         )
+
+        pollLogLock.lock()
         pollLog.append(entry)
 
-        // Trim entries older than 10 minutes
+        // Trim expired entries from front (entries are chronologically ordered)
         let cutoff = Date().addingTimeInterval(-pollLogMaxAge)
-        pollLog.removeAll { $0.timestamp < cutoff }
-    }
-
-    // MARK: - Signal Sampling
-
-    private func sampleSession(aiPid: Int32, hostApp: HostApp?, hostAppPid: Int32?, table: [Int32: ProcessInfo]) -> ActivitySnapshot {
-        let children = ProcessTable.descendants(of: aiPid, in: table)
-        let aiCPU = table[aiPid]?.cpu ?? 0
-        let totalCPU = children.reduce(aiCPU) { $0 + $1.cpu }
-
-        // Check AI process for API connections
-        var connections = countAPIConnections(pids: [aiPid])
-
-        // For Electron host apps, also check AI-related processes in the
-        // host tree — but only processes matching known AI names, not the
-        // entire tree (which would count unrelated HTTPS traffic).
-        if connections == 0, let hostPid = hostAppPid, hostPid != aiPid,
-           hostApp?.isElectron == true {
-            let hostChildren = ProcessTable.descendants(of: hostPid, in: table)
-            let aiRelatedPids = hostChildren
-                .filter { ProcessTable.matchesAIProcess($0.command) }
-                .map(\.pid)
-            if !aiRelatedPids.isEmpty {
-                connections = countAPIConnections(pids: aiRelatedPids)
-                caLog("  host tree check: hostPid=\(hostPid) aiPids=\(aiRelatedPids.count) connections=\(connections)")
+        if let firstValidIndex = pollLog.firstIndex(where: { $0.timestamp >= cutoff }) {
+            if firstValidIndex > 0 {
+                pollLog.removeFirst(firstValidIndex)
             }
+        } else {
+            pollLog.removeAll()
         }
-
-        caLog("  sample: aiPid=\(aiPid) cpu=\(String(format:"%.1f", totalCPU)) net=\(connections) children=\(children.count)")
-
-        return ActivitySnapshot(
-            aiPid: aiPid,
-            hostApp: hostApp,
-            aggregateCPU: totalCPU,
-            apiConnections: connections,
-            childProcessCount: children.count,
-            timestamp: Date()
-        )
+        pollLogLock.unlock()
     }
 
-    /// Count ESTABLISHED TCP connections to port 443 for the given PIDs.
-    /// AI CLI tools only connect to their vendor's API over HTTPS, so any
-    /// port-443 connection is an API connection. This avoids fragile IP matching.
-    private func countAPIConnections(pids: [Int32]) -> Int {
-        let pidList = pids.map(String.init).joined(separator: ",")
-        let output = Shell.run("lsof", "-i", "TCP:443", "-n", "-P", "-a", "-p", pidList)
-        var count = 0
+    // MARK: - Network Sampling (Batched)
 
+    /// Batch lsof call: returns a dictionary mapping each PID to its ESTABLISHED connection count.
+    /// Single call for all PIDs instead of one-per-process.
+    private func batchCountAPIConnections(pids: [Int32]) -> [Int32: Int] {
+        guard !pids.isEmpty else { return [:] }
+        let pidList = pids.map(String.init).joined(separator: ",")
+        let output = Shell.run(["lsof", "-i", "TCP:443", "-n", "-P", "-a", "-p", pidList], timeout: 10)
+
+        var counts: [Int32: Int] = [:]
         for line in output.split(separator: "\n") {
             let lineStr = String(line)
-            if lineStr.contains("ESTABLISHED") {
-                count += 1
+            guard lineStr.contains("ESTABLISHED") else { continue }
+            // lsof output: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+            let parts = lineStr.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
+            if parts.count >= 2, let pid = Int32(parts[1]) {
+                counts[pid, default: 0] += 1
             }
         }
-        return count
+        return counts
     }
 
     // MARK: - Profile Management
@@ -464,14 +491,18 @@ class ActivityMonitor {
     func resetAllProfiles() {
         profiles.removeAll()
         saveProfiles()
-        NSLog("[RobotRunway] All learned profiles reset")
+        Log.profile.notice("All learned profiles reset")
     }
 
     // MARK: - Persistence
 
     func saveProfiles() {
-        if let data = try? JSONEncoder().encode(profiles) {
+        do {
+            let data = try JSONEncoder().encode(profiles)
             UserDefaults.standard.set(data, forKey: "activityProfiles")
+            Log.profile.debug("Saved \(self.profiles.count) profile(s)")
+        } catch {
+            Log.profile.error("Failed to encode profiles: \(error.localizedDescription)")
         }
         lastPersistTime = Date()
     }
@@ -483,9 +514,13 @@ class ActivityMonitor {
     }
 
     private func loadProfiles() {
-        guard let data = UserDefaults.standard.data(forKey: "activityProfiles"),
-              let decoded = try? JSONDecoder().decode([String: ActivityProfile].self, from: data) else { return }
-        profiles = decoded
+        guard let data = UserDefaults.standard.data(forKey: "activityProfiles") else { return }
+        do {
+            profiles = try JSONDecoder().decode([String: ActivityProfile].self, from: data)
+            Log.profile.info("Loaded \(self.profiles.count) profile(s)")
+        } catch {
+            Log.profile.error("Failed to decode profiles: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Migration
@@ -523,6 +558,6 @@ class ActivityMonitor {
 
         saveProfiles()
         UserDefaults.standard.removeObject(forKey: "calibrationBaselines")
-        NSLog("[RobotRunway] Migrated %d legacy baseline(s) to activity profiles", oldBaselines.count)
+        Log.profile.notice("Migrated \(oldBaselines.count) legacy baseline(s) to activity profiles")
     }
 }

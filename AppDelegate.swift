@@ -1,4 +1,5 @@
 import Cocoa
+import os
 
 class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -12,6 +13,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var onboardingController: OnboardingWindowController?
     private var pollTimer: Timer?
     private var isPaused = false
+
+    /// Background queue for polling — keeps ps/lsof off the main thread.
+    private let pollQueue = DispatchQueue(label: "com.robotrunway.poll", qos: .utility)
 
     // MARK: - Menu Items (updated dynamically)
 
@@ -55,6 +59,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         loadIcons()
         buildStatusItem()
 
+        Log.ui.info("RobotRunway launched")
+
         if !UserDefaults.standard.bool(forKey: "didCompleteOnboarding") {
             showOnboarding()
         } else {
@@ -65,6 +71,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         activityMonitor.saveProfiles()
         sleepManager.allowSleep()
+        Log.ui.info("RobotRunway terminated")
     }
 
     // MARK: - Onboarding
@@ -185,16 +192,60 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func startPolling() {
         pollTimer?.invalidate()
         pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
-            self?.tick()
+            self?.dispatchPoll()
         }
+        // No animation timer here — started on-demand when activity is detected.
+        Log.ui.info("Polling started (interval: \(self.pollInterval)s)")
+        dispatchPoll()
+    }
 
-        // Separate fast timer for icon animation (0.1s frame alternation)
-        animationTimer?.invalidate()
+    /// Dispatch poll() to background queue, then update UI on main thread.
+    private func dispatchPoll() {
+        // Capture isPaused on main thread before dispatching
+        let paused = isPaused
+        pollQueue.async { [weak self] in
+            guard let self else { return }
+
+            if paused {
+                DispatchQueue.main.async {
+                    self.sleepManager.allowSleep()
+                    self.updateUI(state: .paused)
+                }
+                return
+            }
+
+            let state = self.activityMonitor.poll()
+
+            DispatchQueue.main.async {
+                switch state {
+                case .noSession, .idle:
+                    self.sleepManager.allowSleep()
+                case .active, .idleCooldown:
+                    self.sleepManager.preventSleep()
+                case .paused:
+                    self.sleepManager.allowSleep()
+                }
+                self.updateUI(state: state)
+            }
+        }
+    }
+
+    // MARK: - Icon Animation (demand-driven)
+
+    /// Start the animation timer if not already running.
+    private func startAnimationIfNeeded() {
+        guard animationTimer == nil else { return }
         animationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.animateIcon()
         }
+    }
 
-        tick()
+    /// Stop the animation timer and show the sleep icon.
+    private func stopAnimation() {
+        animationTimer?.invalidate()
+        animationTimer = nil
+        statusItem.button?.image = iconSleep
+        wakeAnimationFrame = 0
     }
 
     private func animateIcon() {
@@ -205,38 +256,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.image = (wakeAnimationFrame == 0) ? iconWake1 : iconWake2
             wakeAnimationFrame = 1 - wakeAnimationFrame
         } else {
-            // Only show sleep icon after 5 seconds of non-active state
+            // Keep animating during 5-second grace period after activity stops
             let idleFor = Date().timeIntervalSince(lastActiveTime)
             if idleFor > 5.0 {
-                button.image = iconSleep
-                wakeAnimationFrame = 0
+                stopAnimation()
             } else {
-                // Keep animating during the 2s grace period
                 button.image = (wakeAnimationFrame == 0) ? iconWake1 : iconWake2
                 wakeAnimationFrame = 1 - wakeAnimationFrame
             }
         }
-    }
-
-    private func tick() {
-        if isPaused {
-            sleepManager.allowSleep()
-            updateUI(state: .paused)
-            return
-        }
-
-        let state = activityMonitor.poll()
-
-        switch state {
-        case .noSession, .idle:
-            sleepManager.allowSleep()
-        case .active, .idleCooldown:
-            sleepManager.preventSleep()
-        case .paused:
-            sleepManager.allowSleep()
-        }
-
-        updateUI(state: state)
     }
 
     // MARK: - UI Update
@@ -246,8 +274,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if case .active = state {
             isShowingActive = true
             lastActiveTime = Date()
+            startAnimationIfNeeded()
         } else {
             isShowingActive = false
+            // Animation timer will self-stop after 5s grace period
         }
 
         switch state {
@@ -289,7 +319,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func togglePause() {
         isPaused.toggle()
         toggleMenuItem.title = isPaused ? "Resume Monitoring" : "Pause Monitoring"
-        if isPaused { sleepManager.allowSleep() }
+        if isPaused {
+            sleepManager.allowSleep()
+            Log.ui.info("Monitoring paused")
+        } else {
+            Log.ui.info("Monitoring resumed")
+        }
     }
 
     @objc private func setThreshold(_ sender: NSMenuItem) {
@@ -320,7 +355,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if logController == nil {
             logController = LogWindowController()
             logController?.logProvider = { [weak self] in
-                self?.activityMonitor.pollLog ?? []
+                self?.activityMonitor.currentPollLog() ?? []
             }
         }
         logController?.showWindow(nil)
