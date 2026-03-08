@@ -156,28 +156,12 @@ class ActivityChartView: NSView {
     }
 
     private func drawThresholdLine(_ ctx: CGContext, chartRect: NSRect) {
-        // Find the most recent non-nil threshold
-        guard let threshold = entries.last(where: { $0.threshold != nil })?.threshold else { return }
-
-        let y = yPosition(for: threshold, in: chartRect)
-
-        ctx.setStrokeColor(thresholdColor.withAlphaComponent(0.6).cgColor)
-        ctx.setLineWidth(1.0)
-        ctx.setLineDash(phase: 0, lengths: [6, 4])
-
-        ctx.move(to: CGPoint(x: chartRect.minX, y: y))
-        ctx.addLine(to: CGPoint(x: chartRect.maxX, y: y))
-        ctx.strokePath()
-
-        ctx.setLineDash(phase: 0, lengths: [])
-
-        // Label
-        let label = String(format: "Threshold (%.2f)", threshold)
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 9),
-            .foregroundColor: thresholdColor.withAlphaComponent(0.8),
-        ]
-        label.draw(at: NSPoint(x: chartRect.minX + 4, y: y + 2), withAttributes: attrs)
+        // Plot threshold as a time-series line (changes as profile matures)
+        let thresholdPoints = entries.compactMap { e -> (timestamp: Date, value: Double)? in
+            guard let t = e.threshold else { return nil }
+            return (timestamp: e.timestamp, value: t)
+        }
+        drawLine(ctx, chartRect: chartRect, color: thresholdColor, lineWidth: 1.0, points: thresholdPoints)
     }
 
     private func drawDataLines(_ ctx: CGContext, chartRect: NSRect) {
