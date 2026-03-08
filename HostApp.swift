@@ -111,22 +111,43 @@ enum HostAppRegistry {
     /// Find which host app a process belongs to by walking up the process tree.
     /// Returns the matched HostApp and the PID of the host app's process.
     static func hostApp(forProcessID pid: Int32, processTable: [Int32: ProcessInfo]) -> (app: HostApp, pid: Int32)? {
-        let enabledNames = Set(enabledApps.flatMap(\.processNames))
+        let enabled = enabledApps
         var current: Int32? = pid
 
         while let p = current, let info = processTable[p] {
-            // Extract the executable basename from the full args string
-            let baseName = ProcessTable.executableBasename(from: info.command)
-            if enabledNames.contains(baseName) {
-                if let app = enabledApps.first(where: { $0.processNames.contains(baseName) }) {
-                    return (app, p)
-                }
+            if let app = matchHostApp(command: info.command, in: enabled) {
+                return (app, p)
             }
             current = info.ppid
             // Prevent infinite loop at pid 0/1
             if current == p || current == 0 { break }
         }
 
+        return nil
+    }
+
+    /// Match a command string against known host app process names.
+    /// Uses two strategies to handle `ps args` output where paths are unquoted:
+    /// - Names without spaces: check basenames of all space-separated tokens
+    ///   (handles paths like `/Applications/Visual Studio Code.app/.../Electron`)
+    /// - Names with spaces: match at path component boundaries (after `/` or
+    ///   at start of command) to avoid false matches against arbitrary arguments.
+    private static func matchHostApp(command: String, in apps: [HostApp]) -> HostApp? {
+        let tokenBasenames = command.split(separator: " ").map {
+            (String($0) as NSString).lastPathComponent
+        }
+
+        for app in apps {
+            for name in app.processNames {
+                if name.contains(" ") {
+                    // Match at path boundaries: preceded by "/" or at start of command
+                    if command.hasPrefix(name) { return app }
+                    if command.contains("/\(name)") { return app }
+                } else {
+                    if tokenBasenames.contains(name) { return app }
+                }
+            }
+        }
         return nil
     }
 }
