@@ -6,7 +6,7 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────
 
 APP_NAME="RobotRunway"
-BUILD_DIR="build"
+BUILD_DIR="${BUILD_DIR:-build}"
 APP_BUNDLE="${BUILD_DIR}/${APP_NAME}.app"
 CONTENTS="${APP_BUNDLE}/Contents"
 MACOS="${CONTENTS}/MacOS"
@@ -19,17 +19,21 @@ echo "🔨 Building ${APP_NAME}..."
 rm -rf "${BUILD_DIR}"
 mkdir -p "${MACOS}" "${RESOURCES}"
 
-# Detect architecture
-ARCH=$(uname -m)
-if [ "$ARCH" = "arm64" ]; then
-    TARGET="arm64-apple-macos13.0"
-elif [ "$ARCH" = "x86_64" ]; then
-    TARGET="x86_64-apple-macos13.0"
+# Detect architecture (allow override via TARGET env var for CI cross-compilation)
+if [ -n "${TARGET:-}" ]; then
+    echo "   Target: ${TARGET} (override)"
 else
-    echo "❌ Unknown architecture: $ARCH"
-    exit 1
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "arm64" ]; then
+        TARGET="arm64-apple-macos13.0"
+    elif [ "$ARCH" = "x86_64" ]; then
+        TARGET="x86_64-apple-macos13.0"
+    else
+        echo "❌ Unknown architecture: $ARCH"
+        exit 1
+    fi
+    echo "   Architecture: ${ARCH} → target ${TARGET}"
 fi
-echo "   Architecture: ${ARCH} → target ${TARGET}"
 
 # Collect all Swift source files
 SOURCES=$(find "${SRC_DIR}" -maxdepth 1 -name "*.swift" | sort)

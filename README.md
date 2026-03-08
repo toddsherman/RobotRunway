@@ -61,18 +61,37 @@ On first launch, installed apps are automatically enabled. Toggle them in Settin
 
 ## Install
 
-### Build from source
+### Quick install
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/toddsherman/RobotRunway/main/install.sh | bash
+```
+
+Downloads the latest pre-built universal binary from [GitHub Releases](https://github.com/toddsherman/RobotRunway/releases). Falls back to building from source if no release is available.
+
+### Download from Releases
+
+Download the latest `.zip` from [GitHub Releases](https://github.com/toddsherman/RobotRunway/releases), extract it, and drag `RobotRunway.app` to `/Applications/`.
+
+If macOS blocks the app, run:
+```bash
+xattr -cr /Applications/RobotRunway.app
+```
+
+### Build from source
+
+Requires Xcode Command Line Tools (`xcode-select --install`).
+
+```bash
+git clone https://github.com/toddsherman/RobotRunway.git
 cd RobotRunway
-chmod +x build.sh
-./build.sh
+make install
+```
 
-# Install
-cp -r build/RobotRunway.app /Applications/
+### Uninstall
 
-# Run
-open /Applications/RobotRunway.app
+```bash
+make uninstall
 ```
 
 ### Launch at Login

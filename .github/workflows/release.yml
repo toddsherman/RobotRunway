@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Build universal binary
+        run: |
+          set -euo pipefail
+
+          # Build for arm64
+          BUILD_DIR=build/arm64 TARGET=arm64-apple-macos13.0 ./build.sh
+
+          # Build for x86_64
+          BUILD_DIR=build/x86_64 TARGET=x86_64-apple-macos13.0 ./build.sh
+
+          # Merge into universal binary
+          echo "🔗 Creating universal binary..."
+          lipo -create \
+            build/arm64/RobotRunway.app/Contents/MacOS/RobotRunway \
+            build/x86_64/RobotRunway.app/Contents/MacOS/RobotRunway \
+            -output build/arm64/RobotRunway.app/Contents/MacOS/RobotRunway
+
+          # Verify
+          lipo -info build/arm64/RobotRunway.app/Contents/MacOS/RobotRunway
+
+          # Move final app to build root
+          cp -r build/arm64/RobotRunway.app build/RobotRunway.app
+
+      - name: Create zip
+        run: |
+          cd build
+          zip -r "../RobotRunway-${{ steps.version.outputs.VERSION }}.zip" RobotRunway.app
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: RobotRunway-${{ steps.version.outputs.VERSION }}.zip
+          generate_release_notes: true
