@@ -8,7 +8,7 @@ class ActivityChartView: NSView {
     // Chart margins
     private let marginLeft: CGFloat = 44
     private let marginRight: CGFloat = 12
-    private let marginTop: CGFloat = 32
+    private let marginTop: CGFloat = 12
     private let marginBottom: CGFloat = 28
 
     // Line colors
@@ -43,7 +43,6 @@ class ActivityChartView: NSView {
         drawGridAndAxes(ctx, chartRect: chartRect)
         drawThresholdLine(ctx, chartRect: chartRect)
         drawDataLines(ctx, chartRect: chartRect)
-        drawLegend(ctx, chartRect: chartRect)
     }
 
     // MARK: - Time Range
@@ -227,35 +226,4 @@ class ActivityChartView: NSView {
         ctx.strokePath()
     }
 
-    private func drawLegend(_ ctx: CGContext, chartRect: NSRect) {
-        let items: [(String, NSColor)] = [
-            ("Score", scoreColor),
-            ("CPU", cpuColor),
-            ("Net", connectionsColor),
-            ("Children", childrenColor),
-            ("Threshold", thresholdColor),
-        ]
-
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 10, weight: .medium),
-        ]
-
-        var x = chartRect.minX
-        let y = chartRect.maxY + 8
-
-        for (label, color) in items {
-            // Color swatch
-            ctx.setFillColor(color.cgColor)
-            ctx.fill(CGRect(x: x, y: y + 2, width: 12, height: 3))
-
-            x += 16
-
-            // Label
-            let labelAttrs = attrs.merging([.foregroundColor: NSColor.labelColor]) { $1 }
-            let size = label.size(withAttributes: labelAttrs)
-            label.draw(at: NSPoint(x: x, y: y - 4), withAttributes: labelAttrs)
-
-            x += size.width + 16
-        }
-    }
 }

@@ -6,6 +6,7 @@ class LogWindowController: NSWindowController {
     private var chartView: ActivityChartView!
     private var scrollView: NSScrollView!
     private var tabControl: NSSegmentedControl!
+    private var legendView: NSView!
     private var refreshTimer: Timer?
     var logProvider: (() -> [PollLogEntry])?
 
@@ -47,6 +48,11 @@ class LogWindowController: NSWindowController {
         tabControl.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(tabControl)
 
+        // Legend row (sticky, between tabs and chart)
+        legendView = buildLegend()
+        legendView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(legendView)
+
         // Scroll view wrapping the chart
         scrollView = NSScrollView()
         scrollView.hasHorizontalScroller = true
@@ -64,13 +70,57 @@ class LogWindowController: NSWindowController {
             tabControl.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -8),
             tabControl.heightAnchor.constraint(equalToConstant: 24),
 
-            scrollView.topAnchor.constraint(equalTo: tabControl.bottomAnchor, constant: 8),
+            legendView.topAnchor.constraint(equalTo: tabControl.bottomAnchor, constant: 6),
+            legendView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            legendView.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -12),
+            legendView.heightAnchor.constraint(equalToConstant: 16),
+
+            scrollView.topAnchor.constraint(equalTo: legendView.bottomAnchor, constant: 4),
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
 
         window.contentView = container
+    }
+
+    private func buildLegend() -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.spacing = 14
+
+        let items: [(String, NSColor)] = [
+            ("Score", .systemBlue),
+            ("CPU", .systemOrange),
+            ("Network", .systemGreen),
+            ("Children", .systemPurple),
+            ("Threshold", .systemRed),
+        ]
+
+        for (label, color) in items {
+            let swatch = NSView()
+            swatch.wantsLayer = true
+            swatch.layer?.backgroundColor = color.cgColor
+            swatch.layer?.cornerRadius = 1.5
+            swatch.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                swatch.widthAnchor.constraint(equalToConstant: 12),
+                swatch.heightAnchor.constraint(equalToConstant: 3),
+            ])
+
+            let text = NSTextField(labelWithString: label)
+            text.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+            text.textColor = .labelColor
+
+            let pair = NSStackView(views: [swatch, text])
+            pair.orientation = .horizontal
+            pair.spacing = 4
+            pair.alignment = .centerY
+
+            row.addArrangedSubview(pair)
+        }
+
+        return row
     }
 
     override func showWindow(_ sender: Any?) {
@@ -129,7 +179,6 @@ class LogWindowController: NSWindowController {
     private func isScrolledToRight() -> Bool {
         let clipBounds = scrollView.contentView.bounds
         let docWidth = scrollView.documentView?.frame.width ?? 0
-        // Consider "at right" if within 20px of the right edge, or if content fits in view
         return clipBounds.maxX >= docWidth - 20 || docWidth <= clipBounds.width
     }
 
