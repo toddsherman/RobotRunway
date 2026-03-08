@@ -4,6 +4,7 @@ import Cocoa
 class LogWindowController: NSWindowController {
 
     private var chartView: ActivityChartView!
+    private var scrollView: NSScrollView!
     private var tabControl: NSSegmentedControl!
     private var refreshTimer: Timer?
     var logProvider: (() -> [PollLogEntry])?
@@ -12,6 +13,9 @@ class LogWindowController: NSWindowController {
     private var appNames: [String] = []
     /// Currently selected app name (nil = "All").
     private var selectedApp: String?
+
+    /// Chart width = scroll view width × this factor (10 screens for 10 minutes → ~1 min visible).
+    private let chartWidthMultiplier: CGFloat = 10
 
     convenience init() {
         let window = NSWindow(
@@ -43,10 +47,16 @@ class LogWindowController: NSWindowController {
         tabControl.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(tabControl)
 
-        // Chart fills the rest
+        // Scroll view wrapping the chart
+        scrollView = NSScrollView()
+        scrollView.hasHorizontalScroller = true
+        scrollView.hasVerticalScroller = false
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.drawsBackground = false
+        container.addSubview(scrollView)
+
         chartView = ActivityChartView()
-        chartView.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(chartView)
+        scrollView.documentView = chartView
 
         NSLayoutConstraint.activate([
             tabControl.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
@@ -54,10 +64,10 @@ class LogWindowController: NSWindowController {
             tabControl.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -8),
             tabControl.heightAnchor.constraint(equalToConstant: 24),
 
-            chartView.topAnchor.constraint(equalTo: tabControl.bottomAnchor, constant: 8),
-            chartView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            chartView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            chartView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            scrollView.topAnchor.constraint(equalTo: tabControl.bottomAnchor, constant: 8),
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
 
         window.contentView = container
@@ -92,16 +102,46 @@ class LogWindowController: NSWindowController {
         let allEntries = logProvider?() ?? []
         updateTabs(from: allEntries)
 
+        let filtered: [PollLogEntry]
         if let app = selectedApp {
-            chartView.entries = allEntries.filter { $0.appName == app }
+            filtered = allEntries.filter { $0.appName == app }
         } else {
-            chartView.entries = allEntries
+            filtered = allEntries
         }
+
+        // Size the chart: width = visible width × multiplier, height = scroll view height
+        let visibleWidth = scrollView.contentSize.width
+        let chartWidth = visibleWidth * chartWidthMultiplier
+        let chartHeight = scrollView.contentSize.height
+
+        let wasAtRight = isScrolledToRight()
+
+        chartView.frame = NSRect(x: 0, y: 0, width: chartWidth, height: chartHeight)
+        chartView.entries = filtered
         chartView.needsDisplay = true
+
+        // Auto-scroll to right edge (most recent data) if user was already there
+        if wasAtRight {
+            scrollToRight()
+        }
+    }
+
+    private func isScrolledToRight() -> Bool {
+        let clipBounds = scrollView.contentView.bounds
+        let docWidth = scrollView.documentView?.frame.width ?? 0
+        // Consider "at right" if within 20px of the right edge, or if content fits in view
+        return clipBounds.maxX >= docWidth - 20 || docWidth <= clipBounds.width
+    }
+
+    private func scrollToRight() {
+        let docWidth = scrollView.documentView?.frame.width ?? 0
+        let visibleWidth = scrollView.contentSize.width
+        let maxX = max(docWidth - visibleWidth, 0)
+        scrollView.contentView.scroll(to: NSPoint(x: maxX, y: 0))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
     private func updateTabs(from entries: [PollLogEntry]) {
-        // Collect unique app names in order of first appearance
         var seen = Set<String>()
         var names: [String] = []
         for e in entries {
@@ -114,16 +154,14 @@ class LogWindowController: NSWindowController {
         guard names != appNames else { return }
         appNames = names
 
-        // Rebuild segments: "All" + each app
         tabControl.segmentCount = 1 + names.count
         tabControl.setLabel("All", forSegment: 0)
         tabControl.setWidth(40, forSegment: 0)
         for (i, name) in names.enumerated() {
             tabControl.setLabel(name, forSegment: i + 1)
-            tabControl.setWidth(0, forSegment: i + 1) // auto-size
+            tabControl.setWidth(0, forSegment: i + 1)
         }
 
-        // Restore selection
         if let app = selectedApp, let idx = names.firstIndex(of: app) {
             tabControl.selectedSegment = idx + 1
         } else {
@@ -134,11 +172,15 @@ class LogWindowController: NSWindowController {
 
     private func applyFilter() {
         let allEntries = logProvider?() ?? []
+        let filtered: [PollLogEntry]
         if let app = selectedApp {
-            chartView.entries = allEntries.filter { $0.appName == app }
+            filtered = allEntries.filter { $0.appName == app }
         } else {
-            chartView.entries = allEntries
+            filtered = allEntries
         }
+
+        chartView.entries = filtered
         chartView.needsDisplay = true
+        scrollToRight()
     }
 }

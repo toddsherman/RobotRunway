@@ -171,6 +171,14 @@ class ActivityChartView: NSView {
         ctx.strokePath()
 
         ctx.setLineDash(phase: 0, lengths: [])
+
+        // Label
+        let label = String(format: "Threshold (%.2f)", threshold)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 9),
+            .foregroundColor: thresholdColor.withAlphaComponent(0.8),
+        ]
+        label.draw(at: NSPoint(x: chartRect.minX + 4, y: y + 2), withAttributes: attrs)
     }
 
     private func drawDataLines(_ ctx: CGContext, chartRect: NSRect) {
