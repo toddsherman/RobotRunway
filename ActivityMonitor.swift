@@ -286,6 +286,9 @@ class ActivityMonitor {
             let match = HostAppRegistry.hostApp(forProcessID: aiProc.pid, processTable: table)
             guard let hostApp = match?.app else { continue }
             let hostAppPid = match?.pid
+
+            // Skip if the AI process IS the host app itself (e.g. main Electron process)
+            if let hostPid = hostAppPid, aiProc.pid == hostPid { continue }
             let snapshot = sampleSession(aiPid: aiProc.pid, hostApp: hostApp, hostAppPid: hostAppPid, table: table)
 
             var profile = profiles[hostApp.id] ?? ActivityProfile()

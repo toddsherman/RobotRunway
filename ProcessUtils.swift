@@ -98,7 +98,18 @@ enum ProcessTable {
     /// - Paths with spaces: `/Library/Application Support/.../claude`
     ///   (ps args output is unquoted, so the path splits into tokens
     ///    like `Support/.../claude` whose basename still matches)
+    ///
+    /// Excludes Electron helper processes (GPU, renderer, utility) which
+    /// match AI names in their paths but are infrastructure, not AI workers.
     static func matchesAIProcess(_ args: String) -> Bool {
+        // Skip Electron infrastructure processes — they match AI names in
+        // their paths but are GPU/renderer/utility helpers, not AI workers.
+        if args.contains("--type=gpu-process") ||
+           args.contains("--type=renderer") ||
+           args.contains("--type=utility") {
+            return false
+        }
+
         for token in args.split(separator: " ") {
             let baseName = (String(token) as NSString).lastPathComponent.lowercased()
             if aiProcessNames.contains(baseName) { return true }
