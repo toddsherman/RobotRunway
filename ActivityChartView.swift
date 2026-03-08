@@ -161,7 +161,7 @@ class ActivityChartView: NSView {
             guard let t = e.threshold else { return nil }
             return (timestamp: e.timestamp, value: t)
         }
-        drawLine(ctx, chartRect: chartRect, color: thresholdColor, lineWidth: 1.0, points: thresholdPoints)
+        drawLine(ctx, chartRect: chartRect, color: thresholdColor, lineWidth: 1.5, points: thresholdPoints)
     }
 
     private func drawDataLines(_ ctx: CGContext, chartRect: NSRect) {
