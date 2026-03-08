@@ -1,10 +1,39 @@
 import Cocoa
 
+/// Fixed y-axis labels (0.0–1.0) that stay visible when chart scrolls horizontally.
+class YAxisView: NSView {
+    private let marginTop: CGFloat = 12
+    private let marginBottom: CGFloat = 28
+
+    override var isFlipped: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+
+        let chartHeight = bounds.height - marginTop - marginBottom
+
+        for i in 0...5 {
+            let value = Double(i) * 0.2
+            let y = marginBottom + CGFloat(value) * chartHeight
+
+            let label = String(format: "%.1f", value)
+            let size = label.size(withAttributes: attrs)
+            label.draw(at: NSPoint(x: bounds.width - size.width - 4, y: y - size.height / 2), withAttributes: attrs)
+        }
+    }
+}
+
 /// Window that displays a real-time per-app activity chart for debugging activity detection.
 class LogWindowController: NSWindowController {
 
     private var chartView: ActivityChartView!
     private var scrollView: NSScrollView!
+    private var yAxisView: YAxisView!
     private var tabControl: NSSegmentedControl!
     private var legendView: NSView!
     private var refreshTimer: Timer?
@@ -53,6 +82,11 @@ class LogWindowController: NSWindowController {
         legendView.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(legendView)
 
+        // Fixed y-axis labels
+        yAxisView = YAxisView()
+        yAxisView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(yAxisView)
+
         // Scroll view wrapping the chart
         scrollView = NSScrollView()
         scrollView.hasHorizontalScroller = true
@@ -63,6 +97,8 @@ class LogWindowController: NSWindowController {
 
         chartView = ActivityChartView()
         scrollView.documentView = chartView
+
+        let yAxisWidth: CGFloat = 36
 
         NSLayoutConstraint.activate([
             tabControl.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
@@ -75,8 +111,13 @@ class LogWindowController: NSWindowController {
             legendView.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -12),
             legendView.heightAnchor.constraint(equalToConstant: 16),
 
+            yAxisView.topAnchor.constraint(equalTo: legendView.bottomAnchor, constant: 4),
+            yAxisView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            yAxisView.widthAnchor.constraint(equalToConstant: yAxisWidth),
+            yAxisView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+
             scrollView.topAnchor.constraint(equalTo: legendView.bottomAnchor, constant: 4),
-            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: yAxisView.trailingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])

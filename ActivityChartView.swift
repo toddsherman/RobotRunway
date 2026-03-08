@@ -5,8 +5,8 @@ class ActivityChartView: NSView {
 
     var entries: [PollLogEntry] = []
 
-    // Chart margins
-    private let marginLeft: CGFloat = 44
+    // Chart margins (y-axis labels are in a separate fixed view)
+    private let marginLeft: CGFloat = 4
     private let marginRight: CGFloat = 12
     private let marginTop: CGFloat = 12
     private let marginBottom: CGFloat = 28
@@ -115,7 +115,7 @@ class ActivityChartView: NSView {
             .foregroundColor: NSColor.secondaryLabelColor,
         ]
 
-        // Y-axis grid lines and labels (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+        // Y-axis grid lines (labels drawn in separate fixed YAxisView)
         ctx.setStrokeColor(NSColor.separatorColor.withAlphaComponent(0.3).cgColor)
         ctx.setLineWidth(0.5)
 
@@ -123,15 +123,9 @@ class ActivityChartView: NSView {
             let value = Double(i) * 0.2
             let y = yPosition(for: value, in: chartRect)
 
-            // Grid line
             ctx.move(to: CGPoint(x: chartRect.minX, y: y))
             ctx.addLine(to: CGPoint(x: chartRect.maxX, y: y))
             ctx.strokePath()
-
-            // Label
-            let label = String(format: "%.1f", value)
-            let size = label.size(withAttributes: attrs)
-            label.draw(at: NSPoint(x: chartRect.minX - size.width - 4, y: y - size.height / 2), withAttributes: attrs)
         }
 
         // X-axis time labels (every minute)
