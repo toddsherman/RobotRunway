@@ -163,7 +163,7 @@ class ActivityChartView: NSView {
         let y = yPosition(for: threshold, in: chartRect)
 
         ctx.setStrokeColor(thresholdColor.withAlphaComponent(0.6).cgColor)
-        ctx.setLineWidth(1.5)
+        ctx.setLineWidth(1.0)
         ctx.setLineDash(phase: 0, lengths: [6, 4])
 
         ctx.move(to: CGPoint(x: chartRect.minX, y: y))
@@ -182,21 +182,21 @@ class ActivityChartView: NSView {
         let maxChildren = max(Double(entries.map(\.childCount).max() ?? 1), 1)
 
         // Draw lines in back-to-front order (score on top)
-        drawLine(ctx, chartRect: chartRect, color: childrenColor, lineWidth: 1.5,
+        drawLine(ctx, chartRect: chartRect, color: childrenColor, lineWidth: 0.75,
                  points: entries.map { (timestamp: $0.timestamp, value: Double($0.childCount) / maxChildren) })
 
-        drawLine(ctx, chartRect: chartRect, color: connectionsColor, lineWidth: 1.5,
+        drawLine(ctx, chartRect: chartRect, color: connectionsColor, lineWidth: 0.75,
                  points: entries.map { (timestamp: $0.timestamp, value: Double($0.connections) / maxConn) })
 
-        drawLine(ctx, chartRect: chartRect, color: cpuColor, lineWidth: 1.5,
+        drawLine(ctx, chartRect: chartRect, color: cpuColor, lineWidth: 0.75,
                  points: entries.map { (timestamp: $0.timestamp, value: $0.cpu / maxCPU) })
 
-        // Score line — skip nil values (cold start)
+        // Score line — skip nil values (cold start), slightly thicker for emphasis
         let scorePoints = entries.compactMap { e -> (timestamp: Date, value: Double)? in
             guard let s = e.score else { return nil }
             return (timestamp: e.timestamp, value: s)
         }
-        drawLine(ctx, chartRect: chartRect, color: scoreColor, lineWidth: 2.5, points: scorePoints)
+        drawLine(ctx, chartRect: chartRect, color: scoreColor, lineWidth: 1.25, points: scorePoints)
     }
 
     private func drawLine(_ ctx: CGContext, chartRect: NSRect, color: NSColor, lineWidth: CGFloat,

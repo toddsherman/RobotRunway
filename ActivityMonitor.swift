@@ -270,30 +270,80 @@ class ActivityMonitor {
             return .noSession
         }
 
-        // Find the most active AI session
-        var bestSnapshot: ActivitySnapshot?
-        var bestHostApp: HostApp?
+        // Collect and classify ALL detected AI sessions
+        struct ClassifiedSession {
+            let snapshot: ActivitySnapshot
+            let hostApp: HostApp
+            let isActive: Bool
+            let score: Double?
+            let threshold: Double?
+            let maturity: MaturityLevel
+        }
+
+        var sessions: [ClassifiedSession] = []
 
         for aiProc in aiProcesses {
             let match = HostAppRegistry.hostApp(forProcessID: aiProc.pid, processTable: table)
-            // Only monitor AI processes running inside enabled host apps
             guard let hostApp = match?.app else { continue }
             let hostAppPid = match?.pid
             let snapshot = sampleSession(aiPid: aiProc.pid, hostApp: hostApp, hostAppPid: hostAppPid, table: table)
 
-            if let existing = bestSnapshot {
-                if snapshot.apiConnections > existing.apiConnections ||
-                   snapshot.aggregateCPU > existing.aggregateCPU {
-                    bestSnapshot = snapshot
-                    bestHostApp = hostApp
-                }
+            var profile = profiles[hostApp.id] ?? ActivityProfile()
+            let maturity = profile.maturityLevel
+            let isActive: Bool
+            var logScore: Double? = nil
+            var logThreshold: Double? = nil
+
+            if maturity == .coldStart {
+                isActive = snapshot.isActiveByHeuristic
+                caLog("  classify \(hostApp.displayName): heuristic=\(isActive) maturity=coldStart samples=\(profile.totalSamples)")
             } else {
-                bestSnapshot = snapshot
-                bestHostApp = hostApp
+                let (score, details) = snapshot.activityScore(profile: profile)
+                isActive = score >= maturity.activityThreshold
+                logScore = score
+                logThreshold = maturity.activityThreshold
+                caLog("  classify \(hostApp.displayName): score=\(String(format:"%.3f", score)) threshold=\(maturity.activityThreshold) active=\(isActive) maturity=\(maturity.displayName) cpu_s=\(String(format:"%.2f", details.cpu)) child_s=\(String(format:"%.2f", details.children))")
             }
+
+            // Continuous learning for each app
+            let a = maturity.alpha
+            if isActive {
+                profile.activeCPU.update(value: snapshot.aggregateCPU, alpha: a)
+                profile.activeNetwork.update(value: Double(snapshot.apiConnections), alpha: a)
+                profile.activeChildren.update(value: Double(snapshot.childProcessCount), alpha: a)
+                profile.activeSamples += 1
+            } else {
+                profile.idleCPU.update(value: snapshot.aggregateCPU, alpha: a)
+                profile.idleNetwork.update(value: Double(snapshot.apiConnections), alpha: a)
+                profile.idleChildren.update(value: Double(snapshot.childProcessCount), alpha: a)
+                profile.idleSamples += 1
+            }
+            profile.totalSamples += 1
+            profile.lastUpdatedAt = Date()
+            profiles[hostApp.id] = profile
+
+            // Log entry for this app
+            appendLogEntry(appName: hostApp.displayName, cpu: snapshot.aggregateCPU,
+                           connections: snapshot.apiConnections,
+                           childCount: snapshot.childProcessCount,
+                           score: logScore, threshold: logThreshold,
+                           isActive: isActive, maturity: maturity.displayName,
+                           stateLabel: isActive ? "Active" : "Idle")
+
+            sessions.append(ClassifiedSession(
+                snapshot: snapshot, hostApp: hostApp, isActive: isActive,
+                score: logScore, threshold: logThreshold, maturity: maturity
+            ))
         }
 
-        guard let snapshot = bestSnapshot else {
+        persistIfNeeded()
+
+        guard let best = sessions.max(by: { a, b in
+            if a.snapshot.apiConnections != b.snapshot.apiConnections {
+                return a.snapshot.apiConnections < b.snapshot.apiConnections
+            }
+            return a.snapshot.aggregateCPU < b.snapshot.aggregateCPU
+        }) else {
             idleSince = nil
             appendLogEntry(appName: nil, cpu: 0, connections: 0, childCount: 0,
                            score: nil, threshold: nil, isActive: false,
@@ -301,73 +351,21 @@ class ActivityMonitor {
             return .noSession
         }
 
-        let appId = bestHostApp!.id
-        let appName = bestHostApp!.displayName
-        var profile = profiles[appId] ?? ActivityProfile()
+        let appName = best.hostApp.displayName
 
-        // Classify this sample
-        let isActive: Bool
-        let maturity = profile.maturityLevel
-        var logScore: Double? = nil
-        var logThreshold: Double? = nil
-
-        if maturity == .coldStart {
-            isActive = snapshot.isActiveByHeuristic
-            caLog("  classify: heuristic=\(isActive) maturity=coldStart samples=\(profile.totalSamples)")
-        } else {
-            let (score, details) = snapshot.activityScore(profile: profile)
-            isActive = score >= maturity.activityThreshold
-            logScore = score
-            logThreshold = maturity.activityThreshold
-            caLog("  classify: score=\(String(format:"%.3f", score)) threshold=\(maturity.activityThreshold) active=\(isActive) maturity=\(maturity.displayName) cpu_s=\(String(format:"%.2f", details.cpu)) child_s=\(String(format:"%.2f", details.children))")
-        }
-
-        // Continuous learning: update the appropriate distribution
-        let a = maturity.alpha
-        if isActive {
-            profile.activeCPU.update(value: snapshot.aggregateCPU, alpha: a)
-            profile.activeNetwork.update(value: Double(snapshot.apiConnections), alpha: a)
-            profile.activeChildren.update(value: Double(snapshot.childProcessCount), alpha: a)
-            profile.activeSamples += 1
-        } else {
-            profile.idleCPU.update(value: snapshot.aggregateCPU, alpha: a)
-            profile.idleNetwork.update(value: Double(snapshot.apiConnections), alpha: a)
-            profile.idleChildren.update(value: Double(snapshot.childProcessCount), alpha: a)
-            profile.idleSamples += 1
-        }
-        profile.totalSamples += 1
-        profile.lastUpdatedAt = Date()
-
-        profiles[appId] = profile
-        persistIfNeeded()
-
-        // State machine
-        if isActive {
+        // State machine uses the most active session
+        if best.isActive {
             idleSince = nil
-            appendLogEntry(appName: appName, cpu: snapshot.aggregateCPU,
-                           connections: snapshot.apiConnections,
-                           childCount: snapshot.childProcessCount,
-                           score: logScore, threshold: logThreshold,
-                           isActive: true, maturity: maturity.displayName,
-                           stateLabel: "Active")
             return .active(
                 hostAppName: appName,
-                cpu: snapshot.aggregateCPU,
-                connections: snapshot.apiConnections,
-                confidence: profile.maturityLevel
+                cpu: best.snapshot.aggregateCPU,
+                connections: best.snapshot.apiConnections,
+                confidence: best.maturity
             )
         } else {
             let now = Date()
             if idleSince == nil { idleSince = now }
             let elapsed = now.timeIntervalSince(idleSince!)
-
-            let stateLabel = elapsed >= idleThresholdSeconds ? "Idle" : "Idle Cooldown"
-            appendLogEntry(appName: appName, cpu: snapshot.aggregateCPU,
-                           connections: snapshot.apiConnections,
-                           childCount: snapshot.childProcessCount,
-                           score: logScore, threshold: logThreshold,
-                           isActive: false, maturity: maturity.displayName,
-                           stateLabel: stateLabel)
 
             if elapsed >= idleThresholdSeconds {
                 return .idle(hostAppName: appName, idleDuration: elapsed)
